@@ -54,6 +54,21 @@ export interface DetectionResult {
 
 // ── DOM features extracted by the content script ──
 
+/**
+ * A concrete element on the page that a warning can point at (Layer 3's
+ * "element localization"). The selector is resolved against the same document
+ * the content script read it from, so it stays valid for the warning UI.
+ */
+export interface ElementLocation {
+  /** CSS selector resolving to this element on the current page. */
+  selector: string;
+  /** What the element is. */
+  kind: 'logo' | 'login-form' | 'password-field';
+  /** Extra context, e.g. a logo's src or alt text. */
+  detail?: string;
+}
+
+
 export interface DOMFeatures {
   url: string;
   /** Present login form fields (input[type=password], etc.) */
@@ -68,6 +83,8 @@ export interface DOMFeatures {
   pageKeywords: string[];
   /** Page <title> */
   title: string;
+  /** Elements a warning can highlight (logo, login form, password field). */
+  elements: ElementLocation[];
 }
 
 // ── Message types for the three-way communication ──

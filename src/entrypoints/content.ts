@@ -1,4 +1,4 @@
-import type { DOMFeatures, DetectedMessage, ExtensionMessage } from '@/lib/types';
+import type { DOMFeatures, DetectedMessage, ElementLocation, ExtensionMessage } from '@/lib/types';
 import { logInteraction } from '@/utils/interaction-log';
 import { clearHighlight, highlightFlaggedElements } from '@/utils/driver-highlight';
 import { startProgressiveReveal, type ProgressiveRevealHandle } from '@/utils/behavior-monitor';
@@ -46,19 +46,136 @@ export default defineContentScript({
         .map(([word]) => word);
     }
 
+    // ── Element localization (Layer 3) ──
+
+    /** Attributes that suggest an element is a brand logo. */
+    const LOGO_HINT = /logo|brand|wordmark|masthead/i;
+
+    /**
+     * A CSS selector that resolves to exactly this element.
+     *
+     * Prefers a unique id, otherwise walks up building an `nth-of-type` path,
+     * stopping early at the nearest unique-id ancestor. Capped at 5 levels:
+     * the warning only needs to find the element again on this same page, so a
+     * short, readable selector beats a maximally-specific one.
+     */
+    function buildSelector(el: Element): string {
+      const uniqueId = (e: Element) =>
+        e.id && document.querySelectorAll(`#${CSS.escape(e.id)}`).length === 1;
+
+      if (uniqueId(el)) return `#${CSS.escape(el.id)}`;
+
+      const parts: string[] = [];
+      let node: Element | null = el;
+      while (node && parts.length < 5) {
+        const parent: Element | null = node.parentElement;
+        let part = node.tagName.toLowerCase();
+        if (parent) {
+          const sameTag = Array.from(parent.children).filter((c) => c.tagName === node!.tagName);
+          if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
+        }
+        parts.unshift(part);
+        if (!parent) break;
+        if (uniqueId(parent)) {
+          parts.unshift(`#${CSS.escape(parent.id)}`);
+          break;
+        }
+        node = parent;
+      }
+      return parts.join(' > ');
+    }
+
+    /**
+     * Best guess at the page's brand logo: an element whose own id/class/alt
+     * says "logo"/"brand", else the first image in a header or nav.
+     */
+    function findLogo(): HTMLElement | null {
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLElement>('img, svg, [class*="logo"], [id*="logo"], [class*="brand"], [id*="brand"]'),
+      );
+      for (const el of candidates) {
+        const haystack = [
+          el.id,
+          el.getAttribute('class') ?? '',
+          el.getAttribute('alt') ?? '',
+          el.getAttribute('aria-label') ?? '',
+        ].join(' ');
+        if (LOGO_HINT.test(haystack)) return el;
+      }
+      return document.querySelector<HTMLElement>('header img, nav img, header svg, nav svg') ?? candidates[0] ?? null;
+    }
+
+    function rgbToHex(color: string): string | null {
+      const m = color.match(/rgba?\(([^)]+)\)/);
+      if (!m) return null;
+      const parts = m[1]!.split(',').map((v) => parseFloat(v.trim()));
+      if (parts.length === 4 && parts[3] === 0) return null; // fully transparent
+      const [r, g, b] = parts as [number, number, number];
+      return (
+        '#' +
+        [r, g, b]
+          .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'))
+          .join('')
+      );
+    }
+
+    /**
+     * Dominant background colours, sampled from the same elements
+     * tools/generate.py samples so the results are comparable to
+     * `BrandReference.colors`.
+     */
+    function extractColors(): string[] {
+      const sources = [
+        document.body,
+        document.querySelector('header'),
+        document.querySelector('nav'),
+        document.querySelector('main'),
+        document.querySelector('[class*="logo"],[id*="logo"],[class*="brand"],[id*="brand"]'),
+      ];
+      const colors: string[] = [];
+      for (const el of sources) {
+        if (!el) continue;
+        const hex = rgbToHex(getComputedStyle(el).backgroundColor);
+        if (hex && !colors.includes(hex)) colors.push(hex);
+        if (colors.length >= 5) break;
+      }
+      return colors;
+    }
+
+    /** Locate the elements a warning can point at. */
+    function locateElements(passwordField: HTMLElement | null): ElementLocation[] {
+      const located: ElementLocation[] = [];
+
+      const logo = findLogo();
+      if (logo) {
+        located.push({
+          selector: buildSelector(logo),
+          kind: 'logo',
+          detail: logo.getAttribute('src') ?? logo.getAttribute('alt') ?? undefined,
+        });
+      }
+
+      if (passwordField) {
+        located.push({ selector: buildSelector(passwordField), kind: 'password-field' });
+        const form = passwordField.closest('form');
+        if (form) located.push({ selector: buildSelector(form), kind: 'login-form' });
+      }
+
+      return located;
+    }
+
     function extractDOMFeatures(): DOMFeatures {
-      // TODO (Layer 3, remaining): logo candidates and dominant colours.
-      //  - Logo: <img>/<svg> whose class/id contains "logo"/"brand"/"header"
-      //  - Colours: computed background-colour of header/nav/main/body
-      const passwordFields = document.querySelectorAll('input[type="password"]');
+      const passwordFields = document.querySelectorAll<HTMLElement>('input[type="password"]');
+      const logo = findLogo();
       return {
         url: window.location.href,
         hasLoginForm: passwordFields.length > 0,
         passwordFieldCount: passwordFields.length,
-        logoCandidates: [],
-        dominantColors: [],
+        logoCandidates: logo?.getAttribute('src') ? [logo.getAttribute('src')!] : [],
+        dominantColors: extractColors(),
         pageKeywords: extractKeywords(),
         title: document.title,
+        elements: locateElements(passwordFields[0] ?? null),
       };
     }
 

@@ -1,6 +1,6 @@
 import type { DetectionResult, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement } from '@/lib/types';
 import { loadBrands } from '@/utils/brands';
-import { checkDomainLegitimacy } from '@/utils/domain-check';
+import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
 
 export default defineBackground(() => {
@@ -143,37 +143,141 @@ export default defineBackground(() => {
    * impersonation, but a login form claiming to be that brand is exactly the
    * threat model — and requiring it keeps false positives down.
    */
-  function identifyBrandByText(
-    features: DOMFeatures,
-    brands: BrandReference[],
-  ): { brand: BrandReference; matchedKeywords: string[] } | null {
+  /** Shortest brand/page token length eligible for lookalike matching. */
+  const NAME_FUZZ_MIN_LEN = 4;
+  /** Edit distance treated as "a near-copy of the brand name". */
+  const NAME_FUZZ_MAX_DISTANCE = 1;
+  /** Brand keywords a lookalike name must also be backed by. */
+  const FUZZY_KEYWORD_CORROBORATION = 3;
+  /**
+   * Brand-distinctive keywords required when the brand isn't named in the
+   * page title. Naming a brand once (an OAuth "Continue with GitHub" button,
+   * say) is not impersonation; a page that is actually pretending to be the
+   * brand either says so in its title or reuses several of its distinctive
+   * words.
+   */
+  const DISTINCTIVE_KEYWORD_MIN = 3;
+
+  interface TextMatch {
+    brand: BrandReference;
+    matchedKeywords: string[];
+    /** 'exact' - the brand's own name appears; 'lookalike' - a near-copy does. */
+    nameMatch: 'exact' | 'lookalike';
+    /** For a lookalike, which brand token and which page word. */
+    lookalike?: { brandToken: string; pageWord: string };
+  }
+
+  /**
+   * Keywords unique to one brand in the dataset.
+   *
+   * The reference pages are login pages, so the generated keyword lists are
+   * heavy with generic login vocabulary ("password", "email", "continue",
+   * "apple") that several brands share. Matching those says nothing about
+   * *which* brand a page is imitating, so only keywords belonging to exactly
+   * one brand count towards identification.
+   */
+  function distinctiveKeywords(brand: BrandReference, brands: BrandReference[]): Set<string> {
+    const shared = new Map<string, number>();
+    for (const b of brands) {
+      for (const k of new Set(b.keywords.map((x) => x.toLowerCase()))) {
+        shared.set(k, (shared.get(k) ?? 0) + 1);
+      }
+    }
+    return new Set(brand.keywords.map((k) => k.toLowerCase()).filter((k) => shared.get(k) === 1));
+  }
+
+  function identifyBrandByText(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
     if (!features.hasLoginForm) return null;
 
+    const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
     const pageWords = new Set<string>([
       ...features.pageKeywords.map((k) => k.toLowerCase()),
-      ...(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []),
+      ...titleWords,
     ]);
 
-    let best: { brand: BrandReference; matchedKeywords: string[] } | null = null;
+    let exact: TextMatch | null = null;
+    let lookalike: TextMatch | null = null;
+
     for (const brand of brands) {
-      // Tokens that identify the brand by name, e.g. "vtop", or
-      // ["idfc","first","bank"] for a multi-word name.
+      const idToken = brand.id.toLowerCase();
       const nameTokens = [...new Set(
         brand.name.toLowerCase().split(/\s+/).map((t) => t.replace(/[^a-z]/g, '')).filter((t) => t.length >= 3),
       )];
-      const idToken = brand.id.toLowerCase();
-
-      // Either the brand id itself appears, or at least two words of a
-      // multi-word brand name do — one generic word like "bank" isn't enough.
-      const hits = nameTokens.filter((t) => pageWords.has(t));
-      if (!pageWords.has(idToken) && hits.length < 2) continue;
-
       const matchedKeywords = brand.keywords.filter((k) => pageWords.has(k.toLowerCase()));
-      if (!best || matchedKeywords.length > best.matchedKeywords.length) {
-        best = { brand, matchedKeywords };
+
+      // Exact: the brand id appears, or at least two words of a multi-word
+      // name do -- one generic word like "bank" isn't enough on its own.
+      const exactHits = nameTokens.filter((t) => pageWords.has(t));
+      if (pageWords.has(idToken) || exactHits.length >= 2) {
+        // Naming the brand is necessary but not sufficient: plenty of honest
+        // login pages mention a brand (OAuth buttons, "powered by" notices).
+        // Require either the brand in the page title -- what an impersonating
+        // page almost always does -- or several of its distinctive keywords.
+        const namedInTitle = titleWords.has(idToken) || nameTokens.some((t) => titleWords.has(t));
+        const distinctive = distinctiveKeywords(brand, brands);
+        const distinctiveHits = matchedKeywords.filter((k) => distinctive.has(k.toLowerCase()));
+        if (!namedInTitle && distinctiveHits.length < DISTINCTIVE_KEYWORD_MIN) continue;
+
+        if (!exact || matchedKeywords.length > exact.matchedKeywords.length) {
+          exact = { brand, matchedKeywords, nameMatch: 'exact' };
+        }
+        continue;
+      }
+
+      // Lookalike: a brand token one edit from a word on the page, e.g. a page
+      // calling itself "IDHC" while copying IDFC. On its own this is far too
+      // weak -- a short token is one edit from plenty of ordinary words
+      // ("stop" vs "vtop") -- so it carries three guards.
+      if (matchedKeywords.length < FUZZY_KEYWORD_CORROBORATION) continue;
+      // A brand token that also appears in the brand's own keywords is a word
+      // that is simply common on that page ("bank", "first"), not something
+      // that identifies the brand. Only distinctive tokens are worth fuzzing.
+      const commonWords = new Set(brand.keywords.map((k) => k.toLowerCase()));
+      for (const brandToken of [idToken, ...nameTokens]) {
+        if (brandToken.length < NAME_FUZZ_MIN_LEN || commonWords.has(brandToken)) continue;
+        for (const pageWord of pageWords) {
+          if (pageWord.length < NAME_FUZZ_MIN_LEN) continue;
+          const distance = levenshtein(brandToken, pageWord);
+          // Must be a near-MISS. An exact hit is the 'exact' path's business,
+          // which deliberately requires two name tokens rather than one.
+          if (distance < 1 || distance > NAME_FUZZ_MAX_DISTANCE) continue;
+          if (!lookalike || matchedKeywords.length > lookalike.matchedKeywords.length) {
+            lookalike = { brand, matchedKeywords, nameMatch: 'lookalike', lookalike: { brandToken, pageWord } };
+          }
+        }
       }
     }
-    return best;
+
+    // A page that names the brand outright is stronger evidence than one that
+    // only resembles it, so exact always wins.
+    return exact ?? lookalike;
+  }
+
+  /** Parse "#rrggbb" into RGB, or null if it isn't a hex colour. */
+  function hexToRgb(hex: string): [number, number, number] | null {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return null;
+    const n = parseInt(m[1]!, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  /**
+   * Page colours that match the brand's palette. Compared with a tolerance
+   * rather than exactly: the same brand colour renders slightly differently
+   * across pages (opacity, gradients, subpixel blending), so an exact hex
+   * match would almost never fire.
+   */
+  function matchingColors(pageColors: string[], brandColors: string[], tolerance = 24): string[] {
+    return pageColors.filter((pc) => {
+      const a = hexToRgb(pc);
+      if (!a) return false;
+      return brandColors.some((bc) => {
+        const b = hexToRgb(bc);
+        return b != null && Math.abs(a[0] - b[0]) <= tolerance
+          && Math.abs(a[1] - b[1]) <= tolerance
+          && Math.abs(a[2] - b[2]) <= tolerance;
+      });
+    });
   }
 
   // ── Layer 1: nearest-brand comparison for a computed screenshot hash ──
@@ -241,31 +345,48 @@ export default defineBackground(() => {
 
     const signals = [
       visual ? `visual (hamming ${visual.distance})` : null,
-      textual ? `text (${textual.matchedKeywords.length} keywords)` : null,
+      textual ? `text/${textual.nameMatch} (${textual.matchedKeywords.length} keywords)` : null,
     ].filter(Boolean).join(' + ');
     console.log(`[phish_ext] Brand "${matchedBrand.id}" identified by: ${signals}`);
 
     // Layer 2 (domain): is this host legitimate for the identified brand?
     const domain = checkDomainLegitimacy(url, matchedBrand);
 
+    // Layer 3: point the warning at the actual elements. Ordered most-direct
+    // first, because Progressive Reveal reveals them one stage at a time.
     const flaggedElements: FlaggedElement[] = [];
     if (domain.isSuspicious) {
+      const logo = features?.elements.find((e) => e.kind === 'logo');
+      if (logo) {
+        flaggedElements.push({
+          element: 'logo',
+          reason: 'logo_match',
+          selector: logo.selector,
+          title: `This logo is not ${matchedBrand.name}'s`,
+          note:
+            `The page presents itself as ${matchedBrand.name}, but it is served from ` +
+            `"${domain.hostname}".`,
+        });
+      }
+
       flaggedElements.push({
         element: 'domain',
         reason: domain.flagReason ?? 'domain_mismatch',
         title: domain.flagReason === 'typosquatting' ? 'Domain is a lookalike' : 'Unofficial domain',
         note: domain.reason,
       });
-      if (visual) {
+
+      if (textual?.nameMatch === 'lookalike' && textual.lookalike) {
         flaggedElements.push({
-          element: 'page layout',
-          reason: 'visual_similarity',
-          title: `Layout copies ${matchedBrand.name}`,
+          element: 'brand name',
+          reason: 'typosquatting',
+          title: `"${textual.lookalike.pageWord}" imitates "${textual.lookalike.brandToken}"`,
           note:
-            `The page's layout is a close perceptual match for ${matchedBrand.name}'s real ` +
-            `page (${visual.distance} bits different out of 64).`,
+            `This page calls itself "${textual.lookalike.pageWord}" - one character away from ` +
+            `${matchedBrand.name}'s "${textual.lookalike.brandToken}", while reusing its wording and layout.`,
         });
       }
+
       if (textual?.matchedKeywords.length) {
         flaggedElements.push({
           element: 'page text',
@@ -276,6 +397,39 @@ export default defineBackground(() => {
             `${textual.matchedKeywords.slice(0, 6).join(', ')}.`,
         });
       }
+
+      const colors = features ? matchingColors(features.dominantColors, matchedBrand.colors) : [];
+      if (colors.length) {
+        flaggedElements.push({
+          element: 'colour scheme',
+          reason: 'color_scheme',
+          title: `Colours copy ${matchedBrand.name}`,
+          note: `The page uses ${matchedBrand.name}'s palette (${colors.join(', ')}).`,
+        });
+      }
+
+      if (visual) {
+        flaggedElements.push({
+          element: 'page layout',
+          reason: 'visual_similarity',
+          title: `Layout copies ${matchedBrand.name}`,
+          note:
+            `The page's layout is a close perceptual match for ${matchedBrand.name}'s real ` +
+            `page (${visual.distance} bits different out of 64).`,
+        });
+      }
+
+      const passwordField = features?.elements.find((e) => e.kind === 'password-field');
+      if (passwordField) {
+        flaggedElements.push({
+          element: 'password field',
+          reason: 'form_layout',
+          selector: passwordField.selector,
+          title: 'Your password would be sent here',
+          note:
+            `Anything typed here goes to "${domain.hostname}", not to ${matchedBrand.name}.`,
+        });
+      }
     }
 
     // Two independent signals agreeing is stronger than either alone. Text
@@ -284,6 +438,7 @@ export default defineBackground(() => {
     if (domain.isSuspicious) {
       if (visual && textual) riskScore = 0.9;
       else if (visual) riskScore = 0.85;
+      else if (textual?.nameMatch === 'lookalike') riskScore = 0.6;
       else riskScore = 0.7;
     }
 
