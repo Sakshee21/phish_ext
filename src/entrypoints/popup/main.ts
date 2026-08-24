@@ -6,32 +6,38 @@ const scanCount = document.querySelector<HTMLSpanElement>('#scan-count')!;
 const threatCount = document.querySelector<HTMLSpanElement>('#threat-count')!;
 const conditionSelect = document.querySelector<HTMLSelectElement>('#condition-select')!;
 
-import {
-  WARNING_CONDITIONS,
-  WARNING_CONDITION_LABELS,
-  getActiveCondition,
-  setActiveCondition,
-} from '@/lib/conditions';
+import { WARNING_CONDITIONS, WARNING_CONDITION_LABELS, isWarningCondition } from '@/lib/conditions';
+import { DEV_MODE, resolveCondition, setConditionForDev } from '@/utils/condition-assignment';
 import type { ExtensionMessage } from '@/lib/types';
 
-// ── Condition selector ──
+// ── Condition selector (DEV BUILDS ONLY) ──
+// Participants are randomly assigned one condition on install and must keep it
+// for the whole study, so a picker must never reach them: being able to change
+// condition mid-study silently mixes a participant's data across conditions.
+// `DEV_MODE` is `import.meta.env.DEV`, so `pnpm build` drops this entirely and
+// nobody has to remember to disable it.
 
-for (const condition of WARNING_CONDITIONS) {
-  const option = document.createElement('option');
-  option.value = condition;
-  option.textContent = WARNING_CONDITION_LABELS[condition];
-  conditionSelect.append(option);
-}
+const conditionSection = document.querySelector<HTMLElement>('#condition');
 
-conditionSelect.addEventListener('change', () => {
-  const value = conditionSelect.value;
-  if (WARNING_CONDITIONS.includes(value as (typeof WARNING_CONDITIONS)[number])) {
-    void setActiveCondition(value as (typeof WARNING_CONDITIONS)[number]);
-    // Re-run the pipeline so the new condition takes effect on the current tab
-    // immediately instead of on the next navigation.
-    browser.runtime.sendMessage({ type: 'RESCAN' } satisfies ExtensionMessage).catch(() => {});
+if (!DEV_MODE) {
+  conditionSection?.remove();
+} else {
+  for (const condition of WARNING_CONDITIONS) {
+    const option = document.createElement('option');
+    option.value = condition;
+    option.textContent = WARNING_CONDITION_LABELS[condition];
+    conditionSelect.append(option);
   }
-});
+
+  conditionSelect.addEventListener('change', () => {
+    const value = conditionSelect.value;
+    if (!isWarningCondition(value)) return;
+    void setConditionForDev(value);
+    // Re-run the pipeline so the change takes effect on the current tab
+    // instead of on the next navigation.
+    browser.runtime.sendMessage({ type: 'RESCAN' } satisfies ExtensionMessage).catch(() => {});
+  });
+}
 
 // ── Stats from the interaction log ──
 
@@ -71,8 +77,10 @@ async function refreshStats(): Promise<void> {
 }
 
 async function init(): Promise<void> {
-  const condition = await getActiveCondition();
-  conditionSelect.value = condition;
+  if (DEV_MODE) {
+    const condition = await resolveCondition();
+    if (condition) conditionSelect.value = condition;
+  }
   await refreshStats();
 }
 

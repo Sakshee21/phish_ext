@@ -5,6 +5,12 @@ export interface WarningActions {
   onGoBack: () => void;
   onProceed: () => void;
   onDismiss: () => void;
+  /**
+   * Reveal the next piece of evidence. Only supplied by Progressive Reveal,
+   * and only while evidence remains -- the static conditions show everything
+   * at once, so they never render this.
+   */
+  onNext?: () => void;
 }
 
 /**

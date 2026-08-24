@@ -63,8 +63,8 @@ export interface ElementLocation {
   /** CSS selector resolving to this element on the current page. */
   selector: string;
   /** What the element is. */
-  kind: 'logo' | 'login-form' | 'password-field';
-  /** Extra context, e.g. a logo's src or alt text. */
+  kind: 'logo' | 'login-form' | 'password-field' | 'external-asset';
+  /** Extra context: a logo's src/alt, or the host an asset is loaded from. */
   detail?: string;
 }
 
@@ -136,6 +136,13 @@ export interface FeaturesResultMessage {
   features: DOMFeatures;
 }
 
+// content → background (toolbar badge; content scripts cannot call action.*)
+export interface SetBadgeMessage {
+  type: 'SET_BADGE';
+  /** Badge text, or null to clear it. */
+  text: string | null;
+}
+
 // content → background (warning banner actions)
 export interface GoBackMessage {
   type: 'GO_BACK';
@@ -155,5 +162,6 @@ export type ExtensionMessage =
   | PageReadyMessage
   | GetFeaturesMessage
   | FeaturesResultMessage
+  | SetBadgeMessage
   | GoBackMessage
   | RescanMessage;

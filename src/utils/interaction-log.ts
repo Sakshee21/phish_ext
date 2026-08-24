@@ -60,6 +60,15 @@ export async function logInteraction(
     if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
     await browser.storage.local.set({ [STORAGE_KEY]: events });
   } catch (err) {
-    console.warn('[phish_ext] Failed to log interaction:', err);
+    // Most often this is a content script that outlived its extension (any
+    // rebuild with the tab still open) -- harmless while developing, but it
+    // means a lost data point, so say so rather than swallowing it.
+    const stale = String(err).includes('Extension context invalidated');
+    console.warn(
+      stale
+        ? '[phish_ext] Interaction NOT logged - this tab is running a stale content script. Reload the page after reloading the extension.'
+        : '[phish_ext] Failed to log interaction:',
+      stale ? '' : err,
+    );
   }
 }

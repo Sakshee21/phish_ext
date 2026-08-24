@@ -56,6 +56,27 @@ export function actionButtons(
   return { goBack, proceed, dismiss };
 }
 
+/** "Show me more" -- lets the participant pull the next piece of evidence
+ *  rather than waiting for escalation to push it. */
+export function nextButton(onNext: () => void, variant: 'red' | 'card' = 'red'): HTMLButtonElement {
+  const base = [
+    'border:none',
+    'border-radius:6px',
+    'padding:6px 12px',
+    'font:inherit',
+    'font-weight:600',
+    'cursor:pointer',
+    'white-space:nowrap',
+  ].join(';');
+  const style = variant === 'card'
+    ? `${base};background:#b3261e;color:#fff;`
+    : `${base};background:#fff;color:#b3261e;`;
+  const button = element('button', style, 'Next');
+  button.title = 'Show the next piece of evidence';
+  button.addEventListener('click', onNext);
+  return button;
+}
+
 export function reasoningElement(result: DetectionResult): HTMLDivElement {
   return element('div', `font:${FONT};`, result.reasoning);
 }

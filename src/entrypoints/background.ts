@@ -2,9 +2,14 @@ import type { DetectionResult, BrandReference, DOMFeatures, ExtensionMessage, Fl
 import { loadBrands } from '@/utils/brands';
 import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
+import { ensureAssigned } from '@/utils/condition-assignment';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
+
+  // Assign the participant's study condition before they can reach a flagged
+  // page. Never overwrites an existing assignment -- see condition-assignment.
+  void ensureAssigned();
 
   // ── Brand dataset loader ──
   // Loaded from bundled assets/brands/brands.json at startup. Fetch + caching
@@ -419,6 +424,37 @@ export default defineBackground(() => {
         });
       }
 
+      // Assets pulled from the brand's own servers: the page is literally
+      // loading the real site's files. Strong, pointable, and viewport-proof.
+      const brandHosts = matchedBrand.allowedDomains.map((d) => d.toLowerCase());
+      const hotlinked = (features?.elements ?? []).filter(
+        (e) => e.kind === 'external-asset'
+          && e.detail
+          && brandHosts.some((d) => e.detail === d || e.detail!.endsWith(`.${d}`)),
+      );
+      for (const asset of hotlinked) {
+        flaggedElements.push({
+          element: 'copied asset',
+          reason: 'logo_match',
+          selector: asset.selector,
+          title: `Loaded from ${matchedBrand.name}'s own server`,
+          note:
+            `This page pulls content directly from "${asset.detail}" -- ${matchedBrand.name}'s ` +
+            `real domain -- while being served from "${domain.hostname}".`,
+        });
+      }
+
+      const loginForm = features?.elements.find((e) => e.kind === 'login-form');
+      if (loginForm) {
+        flaggedElements.push({
+          element: 'login form',
+          reason: 'form_layout',
+          selector: loginForm.selector,
+          title: 'This sign-in form is not official',
+          note: `The form is laid out like ${matchedBrand.name}'s, but it is hosted on "${domain.hostname}".`,
+        });
+      }
+
       const passwordField = features?.elements.find((e) => e.kind === 'password-field');
       if (passwordField) {
         flaggedElements.push({
@@ -513,6 +549,16 @@ export default defineBackground(() => {
         browser.tabs.goBack(sender.tab.id).catch((err) => {
           console.warn('[phish_ext] Could not navigate back:', err);
         });
+      }
+    } else if (message.type === 'SET_BADGE') {
+      // Progressive Reveal stage 1 is a toolbar badge change and nothing else:
+      // no page interruption, nothing for the participant to hunt for or click.
+      const tabId = sender.tab?.id;
+      if (tabId != null) {
+        void browser.action?.setBadgeText({ tabId, text: message.text ?? '' });
+        if (message.text) {
+          void browser.action?.setBadgeBackgroundColor({ tabId, color: '#b3261e' });
+        }
       }
     } else if (message.type === 'RESCAN') {
       // Popup condition change → re-run the pipeline so the new warning

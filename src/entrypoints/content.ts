@@ -1,9 +1,15 @@
 import type { DOMFeatures, DetectedMessage, ElementLocation, ExtensionMessage } from '@/lib/types';
 import { logInteraction } from '@/utils/interaction-log';
-import { clearHighlight, highlightFlaggedElements } from '@/utils/driver-highlight';
-import { startProgressiveReveal, type ProgressiveRevealHandle } from '@/utils/behavior-monitor';
+import { clearHighlight, highlightEvidence } from '@/utils/driver-highlight';
+import {
+  createBehaviorMonitor,
+  type BehaviorMonitor,
+  type EscalationStage,
+  type EscalationTrigger,
+} from '@/utils/behavior-monitor';
 import { renderers, type Renderer } from '@/components/renderers';
-import { getActiveCondition } from '@/lib/conditions';
+import { modalRenderer } from '@/components/renderers/modal';
+import { resolveCondition } from '@/utils/condition-assignment';
 
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -142,6 +148,38 @@ export default defineContentScript({
       return colors;
     }
 
+    /**
+     * Elements loading their content from a *different* host than the page.
+     *
+     * A clone that hotlinks the real brand's images/fonts instead of
+     * re-hosting them is pointing straight at who it is imitating -- and
+     * unlike keywords or a screenshot hash, it is unaffected by window size.
+     * One element per external host, so a page pulling 11 files from one
+     * server yields one piece of evidence rather than eleven.
+     */
+    function locateExternalAssets(): ElementLocation[] {
+      const here = window.location.hostname;
+      const seen = new Set<string>();
+      const located: ElementLocation[] = [];
+
+      for (const el of Array.from(
+        document.querySelectorAll<HTMLElement>('img[src], script[src], link[href], video[src], source[src]'),
+      )) {
+        const raw = el.getAttribute('src') ?? el.getAttribute('href');
+        if (!raw) continue;
+        let host: string;
+        try {
+          host = new URL(raw, window.location.href).hostname;
+        } catch {
+          continue;
+        }
+        if (!host || host === here || seen.has(host)) continue;
+        seen.add(host);
+        located.push({ selector: buildSelector(el), kind: 'external-asset', detail: host });
+      }
+      return located;
+    }
+
     /** Locate the elements a warning can point at. */
     function locateElements(passwordField: HTMLElement | null): ElementLocation[] {
       const located: ElementLocation[] = [];
@@ -161,6 +199,7 @@ export default defineContentScript({
         if (form) located.push({ selector: buildSelector(form), kind: 'login-form' });
       }
 
+      located.push(...locateExternalAssets());
       return located;
     }
 
@@ -180,21 +219,46 @@ export default defineContentScript({
     }
 
     // ── Warning rendering (condition dispatch) ──
-    // Renders the active warning condition (banner/modal/tooltip/icon) or the
-    // adaptive Progressive Reveal session, and logs every user action.
+    // Renders the participant's assigned condition. The four static
+    // conditions each render exactly one thing and nothing else -- assigned to
+    // 'banner' means a banner, always, with no escalation and no spotlight.
+    // 'progressive' is one self-contained condition whose four stages reuse
+    // those same renderers as containers.
 
     let activeRenderer: Renderer | null = null;
-    let activeMonitor: ProgressiveRevealHandle | null = null;
+    let activeMonitor: BehaviorMonitor | null = null;
 
-    /** Remove whatever warning UI is on screen: the active renderer, any
-     *  Progressive Reveal session, and the Driver.js spotlight (which lives
-     *  outside the renderers' own DOM, so it needs clearing separately). */
+    /** Remove whatever warning UI is on screen, including the spotlight (which
+     *  lives outside the renderers' own DOM) and any running monitor. */
+    /**
+     * Send to the background without ever throwing into the page.
+     *
+     * A content script outlives its extension whenever the extension is
+     * reloaded with the tab still open. From then on `browser.runtime.*`
+     * throws "Extension context invalidated" -- and it throws *synchronously*,
+     * so attaching `.catch()` is not enough on its own.
+     */
+    function sendToBackground(message: ExtensionMessage): void {
+      try {
+        const sent = browser.runtime.sendMessage(message) as Promise<unknown> | undefined;
+        void sent?.catch?.(() => {});
+      } catch {
+        // Stale content script: nothing useful left to do from this page.
+      }
+    }
+
+    /** Set or clear the toolbar badge (the background owns `action.*`). */
+    function setBadge(text: string | null): void {
+      sendToBackground({ type: 'SET_BADGE', text } satisfies ExtensionMessage);
+    }
+
     function teardownWarning(): void {
       activeRenderer?.destroy();
       activeRenderer = null;
       activeMonitor?.destroy();
       activeMonitor = null;
       clearHighlight();
+      setBadge(null);
     }
 
     function renderWarning(result: DetectedMessage['result']): void {
@@ -204,28 +268,51 @@ export default defineContentScript({
       }
     }
 
+    /** A verdict carrying only the evidence a given stage has revealed. */
+    function withEvidence(
+      result: DetectedMessage['result'],
+      evidence: DetectedMessage['result']['flaggedElements'],
+      full: boolean,
+    ): DetectedMessage['result'] {
+      return {
+        ...result,
+        flaggedElements: evidence,
+        // Until the final stage the participant sees only the reasons for the
+        // evidence revealed so far, not the complete write-up.
+        reasoning: full
+          ? result.reasoning
+          : evidence.map((f) => [f.title, f.note].filter(Boolean).join(' — '))
+              .filter(Boolean)
+              .join(' ')
+              .trim() || 'This page may not be safe.',
+      };
+    }
+
     async function showWarning(result: DetectedMessage['result']): Promise<void> {
-      const condition = await getActiveCondition();
+      const condition = await resolveCondition();
+      if (!condition) {
+        // resolveCondition already logged why. Rendering anyway would produce
+        // an interaction we cannot attribute to a condition, which is worse
+        // for the study than a missing data point.
+        return;
+      }
       console.log('[phish_ext] Rendering warning (condition:', condition + ')');
-      await logInteraction('shown', result, window.location.href, condition);
 
       teardownWarning();
 
-      // Progressive Reveal is a session (state machine + listeners), not a
-      // single renderer.
       if (condition === 'progressive') {
-        activeMonitor = startProgressiveReveal(result, condition, window.location.href);
+        await logInteraction('shown', result, window.location.href, condition, 1);
+        startProgressiveReveal(result);
         return;
       }
 
+      await logInteraction('shown', result, window.location.href, condition);
       activeRenderer = renderers[condition]();
       activeRenderer.show(result, {
         onGoBack: () => {
           teardownWarning();
           void logInteraction('went-back', result, window.location.href, condition);
-          browser.runtime
-            .sendMessage({ type: 'GO_BACK' } satisfies ExtensionMessage)
-            .catch(() => {});
+          sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
         },
         onProceed: () => {
           teardownWarning();
@@ -236,26 +323,97 @@ export default defineContentScript({
           void logInteraction('dismissed', result, window.location.href, condition);
         },
       });
+    }
 
-      // The Driver.js evidence tour complements banner/icon; modal and tooltip
-      // anchor their own elements. Skips the no-op until flags carry selectors
-      // (Layer 3).
-      if (
-        (condition === 'banner' || condition === 'icon') &&
-        result.flaggedElements.some((f) => f.selector)
-      ) {
-        highlightFlaggedElements(result);
-      }
+    // ── Progressive Reveal: stage containers ──
+    // The monitor decides *when* and *how much*; this decides what that looks
+    // like, by reusing the same renderers the static conditions use rather
+    // than duplicating any rendering per stage.
+
+    function startProgressiveReveal(result: DetectedMessage['result']): void {
+      const url = window.location.href;
+
+      /** Terminal actions carry the stage reached -- i.e. how much evidence had
+       *  been revealed when the participant acted. This is the measurement the
+       *  whole condition exists to produce. */
+      const actionsForStage = (stage: EscalationStage) => ({
+        onGoBack: () => {
+          teardownWarning();
+          void logInteraction('went-back', result, url, 'progressive', stage);
+          sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
+        },
+        onProceed: () => {
+          teardownWarning();
+          void logInteraction('proceeded', result, url, 'progressive', stage);
+        },
+        onDismiss: () => {
+          teardownWarning();
+          void logInteraction('dismissed', result, url, 'progressive', stage);
+        },
+      });
+
+      activeMonitor = createBehaviorMonitor({
+        flaggedElements: result.flaggedElements,
+        onEscalate: (stage, evidence, trigger) => {
+          // One container per stage: replace the previous rather than layering.
+          activeRenderer?.destroy();
+          activeRenderer = null;
+          clearHighlight();
+
+          const actions = actionsForStage(stage);
+          const partial = withEvidence(result, evidence, activeMonitor?.isFinalStage() ?? false);
+          // Offer "Next" while evidence remains, so a participant can pull the
+          // next piece instead of waiting for escalation to push it. Derived
+          // from the stage rather than the monitor handle: this callback runs
+          // once before `activeMonitor` has been assigned.
+          const onNext = () => activeMonitor?.advance();
+
+          // The badge stays lit for the whole session, at every stage.
+          setBadge('!');
+
+          const isFinal = activeMonitor?.isFinalStage() ?? false;
+
+          if (stage === 1) {
+            // Watching. Toolbar badge only -- nothing injected into the page,
+            // nothing to find and click; escalation is driven by behaviour.
+          } else if (!isFinal) {
+            // One more piece of evidence, marked on the page. Everything
+            // already revealed stays outlined, so the picture builds up.
+            highlightEvidence(evidence, onNext);
+          } else {
+            // Everything has been shown; now a decision is required. The
+            // outlines stay up behind the modal so the evidence is still
+            // visible while they choose.
+            highlightEvidence(evidence);
+            activeRenderer = modalRenderer();
+            activeRenderer.show(partial, actions);
+          }
+
+          logStage(result, stage, trigger);
+        },
+      });
+    }
+
+    /** Stage 1 is the monitor starting; later stages are escalations, tagged
+     *  by whether the participant was pushed there or asked to go. */
+    function logStage(
+      result: DetectedMessage['result'],
+      stage: EscalationStage,
+      trigger: EscalationTrigger,
+    ): void {
+      if (trigger === 'start') return;
+      console.log(`[phish_ext] Progressive Reveal -> stage ${stage} (${trigger})`);
+      void logInteraction('escalated', result, window.location.href, 'progressive', stage);
     }
 
     // ── Send DOM features to background on load ──
 
     const features = extractDOMFeatures();
-    browser.runtime.sendMessage<ExtensionMessage>({
+    sendToBackground({
       type: 'PAGE_READY',
       url: window.location.href,
       features,
-    });
+    } satisfies ExtensionMessage);
 
     // ── Listen for detection results from background ──
 

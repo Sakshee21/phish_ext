@@ -1,11 +1,17 @@
 /**
- * Warning-condition selection.
+ * The warning conditions compared by the evaluation study.
  *
- * The evaluation study runs a between-subjects comparison of warning designs:
- * each participant's browser is pinned to one condition via
- * `storage.local['phish_condition']` (defaults to 'banner'). Progressive
- * Reveal composes the banner/modal/icon renderers and is itself a selectable
- * condition.
+ * This module is the shared contract only -- the type, the list, and display
+ * labels. *Which* condition a given participant gets is decided once per
+ * install by `utils/condition-assignment`, which is also the only place
+ * allowed to write it.
+ *
+ * The study is between-subjects: a participant sees exactly one of these for
+ * the whole study. Progressive Reveal is a single self-contained condition
+ * with four internal stages -- it reuses the other renderers as containers,
+ * but a participant assigned to it never experiences the others as
+ * conditions, and a participant assigned to (say) 'banner' never escalates to
+ * anything else.
  */
 
 export type WarningCondition = 'banner' | 'modal' | 'tooltip' | 'icon' | 'progressive';
@@ -20,26 +26,6 @@ export const WARNING_CONDITION_LABELS: Record<WarningCondition, string> = {
   progressive: 'Progressive Reveal',
 };
 
-const STORAGE_KEY = 'phish_condition';
-const DEFAULT_CONDITION: WarningCondition = 'banner';
-
 export function isWarningCondition(value: unknown): value is WarningCondition {
-  return (
-    typeof value === 'string' && (WARNING_CONDITIONS as readonly string[]).includes(value)
-  );
-}
-
-/** Read the active warning condition. Never throws. */
-export async function getActiveCondition(): Promise<WarningCondition> {
-  try {
-    const stored = await browser.storage.local.get(STORAGE_KEY);
-    return isWarningCondition(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : DEFAULT_CONDITION;
-  } catch {
-    return DEFAULT_CONDITION;
-  }
-}
-
-/** Persist the active warning condition (used by the popup / study setup). */
-export async function setActiveCondition(condition: WarningCondition): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEY]: condition });
+  return typeof value === 'string' && (WARNING_CONDITIONS as readonly string[]).includes(value);
 }

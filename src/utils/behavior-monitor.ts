@@ -1,164 +1,189 @@
-import type { DetectionResult, ExtensionMessage, FlaggedElement } from '@/lib/types';
-import type { WarningCondition } from '@/lib/conditions';
-import { logInteraction } from '@/utils/interaction-log';
-import { clearHighlight, highlightFlaggedElements } from '@/utils/driver-highlight';
-import { bannerRenderer } from '@/components/renderers/banner';
-import { iconRenderer } from '@/components/renderers/icon';
-import { modalRenderer } from '@/components/renderers/modal';
-import type { Renderer, WarningActions } from '@/components/renderers';
+import type { FlaggedElement } from '@/lib/types';
 
 /**
- * Progressive Reveal — the adaptive warning condition.
+ * Progressive Reveal's hesitation monitor.
  *
- * Owns a stage state machine (1 → 4) driven by measured user hesitation:
- * - a dwell timer is the baseline escalator,
- * - cursor proximity to the credential field and focus/typing on it accelerate
- *   escalation to the next stage (strong intent signals).
+ * ## The model
  *
- * Each stage composes the existing static renderers and reveals one more piece
- * of the `flaggedElements`/`reasoning` evidence:
- *   Stage 1  passive icon, no evidence
- *   Stage 2  highlight + one-reason banner (highlight no-ops until flagged
- *            elements carry selectors — Layer 3)
- *   Stage 3  banner with the revealed evidence
- *   Stage 4  modal with the full reasoning, forced decision
+ * Progressive Reveal is ONE self-contained condition with four internal
+ * stages -- not a fallback chain, and not the other four conditions firing in
+ * sequence. A participant assigned to it never experiences banner/modal/
+ * tooltip/icon as conditions; those renderers are reused as *containers*
+ * inside its stages, which is invisible to the participant.
  *
- * Every stage transition is logged (`escalated` + stage); final actions carry
- * the stage reached.
+ * Every stage advances two things together, never one alone:
+ *
+ *   stage 1  0 evidence items  + passive icon      (watching for a reaction)
+ *   stage 2  1 evidence item   + on-page highlight (light-touch annotation)
+ *   stage 3  2 evidence items  + banner
+ *   stage 4  all evidence      + blocking modal    (forces a decision)
+ *
+ * So stage 3 is never "the same one item, but louder" -- more evidence *and*
+ * a louder container, in lockstep. That pairing is what the study is testing.
+ *
+ * ## Escalation is lazy
+ *
+ * A stage advances only while hesitation keeps actively firing. Someone who
+ * reads the stage 1 icon and leaves has *completed* the interaction -- they
+ * should never see stages 2-4, and "acted at stage 1" is the result, not a
+ * failure to escalate. Idle is not hesitation either: a tab left open while
+ * the participant walks away must not march itself to a modal, so dwell only
+ * counts while the page is visible and they have interacted recently.
+ *
+ * This module owns signals and the state machine only. It does no rendering:
+ * it hands the caller a stage plus the slice of evidence that stage should
+ * reveal, and the caller composes the existing renderers. Keeping it that way
+ * is what stops per-stage rendering logic being duplicated here.
  */
 
-/** Dwell time (ms) before escalating from stage 1→2, 2→3, 3→4. */
-const STAGE_DWELL_MS = [8000, 12000, 15000] as const;
-/** Cursor-to-credential-field distance (px) that counts as "approaching". */
-const APPROACH_PX = 150;
-/** mousemove throttle interval (ms). */
+/**
+ * Stages are 1-based and their count depends on the verdict:
+ *
+ *   stage 1            watching. Toolbar badge, no evidence shown.
+ *   stage 1 + k        the k-th piece of evidence revealed on the page
+ *                      (k = 1..N, outlines accumulating)
+ *   stage N + 2        every piece shown, and a final decision is required.
+ *
+ * So a verdict with 5 pieces of evidence runs 1 + 5 + 1 = 7 stages. Evidence
+ * depth is the whole ladder; the only container change is the confirmation at
+ * the end, once there is nothing left to reveal.
+ */
+export type EscalationStage = number;
+
+const FIRST_STAGE: EscalationStage = 1;
+
+/** Evidence revealed at a stage: none while watching, then one more each step. */
+function evidenceCountAt(stage: EscalationStage, total: number): number {
+  if (stage <= 1) return 0;
+  return Math.min(stage - 1, total);
+}
+
+/** The last stage: everything revealed, decision required. */
+function finalStage(total: number): EscalationStage {
+  return total + 2;
+}
+
+// -- Tunables ---------------------------------------------------------------
+// Starting values, to be tuned from pilot data and then FROZEN before real
+// collection: changing them mid-study makes participants non-comparable, the
+// same hazard as re-randomising assignment and just as invisible afterwards.
+
+/** Dwell (ms) at stage 1 before the first piece of evidence appears. */
+const WATCH_DWELL_MS = 6000;
+
+/** Dwell (ms) between one piece of evidence and the next. */
+const EVIDENCE_DWELL_MS = 6000;
+
+/** Dwell (ms) after the last piece before the confirmation is required. */
+const CONFIRM_DWELL_MS = 8000;
+
+/** Distance (px) from the credential field's box that counts as approaching. */
+const APPROACH_PX = 120;
+
+/**
+ * Dwell only escalates if the participant interacted within this window (and
+ * the page is visible). This is what makes escalation lazy rather than a plain
+ * timer -- an abandoned tab stops progressing instead of reaching a modal
+ * nobody is looking at.
+ */
+const ENGAGEMENT_WINDOW_MS = 10_000;
+
+/** Minimum gap between signal-driven escalations. */
+const SIGNAL_COOLDOWN_MS = 1500;
+
+/** mousemove sampling interval (ms). */
 const MOVE_THROTTLE_MS = 150;
-/** Minimum gap between signal-driven escalations (avoids an instant stage 4
- *  from a single hover or a few keystrokes). */
-const SIGNAL_COOLDOWN_MS = 2000;
 
-const STAGES = 4;
+/** How often the dwell check re-evaluates. */
+const TICK_MS = 500;
 
-/** The first `stage - 1` flagged elements are the evidence revealed so far. */
-function revealedFlags(flags: FlaggedElement[], stage: number): FlaggedElement[] {
-  return flags.slice(0, Math.min(stage - 1, flags.length));
+// -- API --------------------------------------------------------------------
+
+/**
+ * What caused a stage to be entered.
+ * - 'start'  the monitor beginning at stage 1
+ * - 'auto'   hesitation signals pushed the participant forward
+ * - 'manual' the participant asked for more evidence ("Next")
+ *
+ * Worth keeping distinct in the log: evidence someone *sought out* is a
+ * different behaviour from evidence that was pushed at them, and the two
+ * should not be pooled when comparing conditions.
+ */
+export type EscalationTrigger = 'start' | 'auto' | 'manual';
+
+export interface BehaviorMonitorOptions {
+  /** The full evidence set; each stage reveals a prefix of it. */
+  flaggedElements: FlaggedElement[];
+  /**
+   * Called on entering every stage, including stage 1 at start. Receives the
+   * stage, exactly the evidence that stage should show, and what caused it.
+   */
+  onEscalate: (
+    stage: EscalationStage,
+    evidenceSlice: FlaggedElement[],
+    trigger: EscalationTrigger,
+  ) => void;
 }
 
-/** The credential field to watch for approach/focus signals. */
-function credentialField(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('input[type="password"], input:not([type="hidden"])');
-}
-
-export interface ProgressiveRevealHandle {
+export interface BehaviorMonitor {
+  /** The stage currently showing -- log this alongside terminal actions. */
+  currentStage(): EscalationStage;
+  /** True while evidence remains to reveal (i.e. a "Next" should be offered). */
+  hasMoreEvidence(): boolean;
+  /** True once everything is revealed and a decision is being asked for. */
+  isFinalStage(): boolean;
+  /** Participant-initiated advance. Not rate-limited: it is an explicit ask. */
+  advance(): void;
+  /** Remove every listener and timer. Idempotent. */
   destroy(): void;
 }
 
-/**
- * Start a Progressive Reveal session for a detection verdict.
- * Returns a handle whose `destroy()` tears down all listeners and the active
- * renderer (call it when a new warning replaces this one).
- */
-export function startProgressiveReveal(
-  result: DetectionResult,
-  condition: WarningCondition,
-  url: string,
-): ProgressiveRevealHandle {
-  let stage = 1;
-  let activeRenderer: Renderer | null = null;
-  let dwellTimer: number | null = null;
+/** The credential field whose vicinity counts as intent to enter credentials. */
+function credentialField(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('input[type="password"]')
+    ?? document.querySelector<HTMLElement>('input:not([type="hidden"])');
+}
+
+export function createBehaviorMonitor(options: BehaviorMonitorOptions): BehaviorMonitor {
+  const { flaggedElements, onEscalate } = options;
+
+  let stage: EscalationStage = FIRST_STAGE;
   let disposed = false;
-
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    if (dwellTimer != null) {
-      clearTimeout(dwellTimer);
-      dwellTimer = null;
-    }
-    window.removeEventListener('mousemove', onMove);
-    document.removeEventListener('focusin', onFocus, true);
-    document.removeEventListener('keydown', onKey, true);
-    activeRenderer?.destroy();
-    activeRenderer = null;
-    clearHighlight();
-  };
-
-  const actions: WarningActions = {
-    onGoBack: () => {
-      void logInteraction('went-back', result, url, condition, stage);
-      dispose();
-      browser.runtime
-        .sendMessage({ type: 'GO_BACK' } satisfies ExtensionMessage)
-        .catch(() => {});
-    },
-    onProceed: () => {
-      void logInteraction('proceeded', result, url, condition, stage);
-      dispose();
-    },
-    onDismiss: () => {
-      void logInteraction('dismissed', result, url, condition, stage);
-      dispose();
-    },
-  };
-
-  function renderStage(s: number): void {
-    const revealed = revealedFlags(result.flaggedElements, s);
-    const partial: DetectionResult = {
-      riskScore: result.riskScore,
-      matchedBrand: result.matchedBrand,
-      flaggedElements: revealed,
-      reasoning:
-        s >= STAGES
-          ? result.reasoning
-          : revealed
-              .map((f) => [f.title, f.note].filter(Boolean).join(' — '))
-              .filter(Boolean)
-              .join(' ')
-              .trim() || 'This page may not be safe.',
-    };
-
-    activeRenderer?.destroy();
-    activeRenderer = null;
-    clearHighlight();
-
-    if (s === 1) {
-      activeRenderer = iconRenderer();
-      activeRenderer.show(partial, actions);
-    } else if (s === 2) {
-      activeRenderer = bannerRenderer();
-      activeRenderer.show(partial, actions);
-      // Highlight the revealed evidence; no-op until flags carry selectors (Layer 3).
-      if (partial.flaggedElements.some((f) => f.selector)) {
-        highlightFlaggedElements(partial);
-      }
-    } else if (s === 3) {
-      activeRenderer = bannerRenderer();
-      activeRenderer.show(partial, actions);
-    } else {
-      activeRenderer = modalRenderer();
-      activeRenderer.show(partial, actions);
-    }
-
-    if (s < STAGES) {
-      dwellTimer = window.setTimeout(() => {
-        if (!disposed) escalate();
-      }, STAGE_DWELL_MS[s - 1]);
-    }
-  }
-
-  function escalate(): void {
-    if (disposed || stage >= STAGES) return;
-    stage += 1;
-    void logInteraction('escalated', result, url, condition, stage);
-    renderStage(stage);
-  }
-
-  let lastMoveAt = 0;
-  let wasInProximity = false;
+  let stageEnteredAt = Date.now();
+  let lastInteractionAt = Date.now();
   let lastSignalEscalation = 0;
+  let lastMoveSampledAt = 0;
+  let wasNearField = false;
+  let tick: number | null = null;
 
-  /** Signal-driven escalation (hover-approach / focus / typing), rate-limited
-   *  so a sustained hover or a few keystrokes don't jump straight to stage 4. */
+  const total = flaggedElements.length;
+  const LAST_STAGE = finalStage(total);
+
+  const evidenceFor = (s: EscalationStage): FlaggedElement[] =>
+    flaggedElements.slice(0, evidenceCountAt(s, total));
+
+  /** How long the current stage waits before advancing on its own. */
+  function dwellFor(s: EscalationStage): number {
+    if (s <= 1) return WATCH_DWELL_MS;
+    // The step that would reveal the last item leads into the confirmation.
+    return evidenceCountAt(s, total) >= total ? CONFIRM_DWELL_MS : EVIDENCE_DWELL_MS;
+  }
+
+  function enterStage(next: EscalationStage, trigger: EscalationTrigger): void {
+    stage = next;
+    stageEnteredAt = Date.now();
+    onEscalate(stage, evidenceFor(stage), trigger);
+  }
+
+  function escalate(trigger: EscalationTrigger = 'auto'): void {
+    if (disposed || stage >= LAST_STAGE) return;
+    enterStage(stage + 1, trigger);
+  }
+
+  /**
+   * Escalation from a discrete signal, rate-limited so a burst of keystrokes
+   * cannot jump straight from stage 1 to stage 4.
+   */
   function signalEscalate(): void {
     const now = Date.now();
     if (now - lastSignalEscalation < SIGNAL_COOLDOWN_MS) return;
@@ -166,42 +191,99 @@ export function startProgressiveReveal(
     escalate();
   }
 
-  function onMove(e: MouseEvent): void {
+  const noteInteraction = () => {
+    lastInteractionAt = Date.now();
+  };
+
+  /** Still-here-and-engaged check that gates dwell-based escalation. */
+  function isEngaged(): boolean {
+    return (
+      document.visibilityState === 'visible'
+      && Date.now() - lastInteractionAt <= ENGAGEMENT_WINDOW_MS
+    );
+  }
+
+  function onTick(): void {
+    if (disposed || stage >= LAST_STAGE) return;
+    if (Date.now() - stageEnteredAt < dwellFor(stage)) return;
+    // Dwell is up, but only escalate if they are actually still here. If not,
+    // the stage persists -- it does not skip ahead once they come back.
+    if (!isEngaged()) {
+      stageEnteredAt = Date.now();
+      return;
+    }
+    escalate();
+  }
+
+  function onMove(event: MouseEvent): void {
+    noteInteraction();
     const now = Date.now();
-    if (now - lastMoveAt < MOVE_THROTTLE_MS) return;
-    lastMoveAt = now;
+    if (now - lastMoveSampledAt < MOVE_THROTTLE_MS) return;
+    lastMoveSampledAt = now;
 
     const field = credentialField();
     if (!field) return;
-    const rect = field.getBoundingClientRect();
-    const dx = Math.max(rect.left - e.clientX, 0, e.clientX - rect.right);
-    const dy = Math.max(rect.top - e.clientY, 0, e.clientY - rect.bottom);
-    const inProximity = Math.hypot(dx, dy) <= APPROACH_PX;
-    // Escalate on *entering* the approach zone, not while lingering inside it.
-    const shouldEscalate = inProximity && !wasInProximity;
-    wasInProximity = inProximity;
-    if (shouldEscalate) signalEscalate();
+    const box = field.getBoundingClientRect();
+    const dx = Math.max(box.left - event.clientX, 0, event.clientX - box.right);
+    const dy = Math.max(box.top - event.clientY, 0, event.clientY - box.bottom);
+    const near = Math.hypot(dx, dy) <= APPROACH_PX;
+
+    // Fire on *entering* the zone, not continuously while inside it.
+    if (near && !wasNearField) signalEscalate();
+    wasNearField = near;
   }
 
-  function onFocus(e: FocusEvent): void {
-    const t = e.target;
-    if (t instanceof HTMLElement && t.matches('input[type="password"], input:not([type="hidden"])')) {
+  function onFocusIn(event: FocusEvent): void {
+    noteInteraction();
+    const target = event.target;
+    if (target instanceof HTMLElement && target.matches('input[type="password"]')) {
       signalEscalate();
     }
   }
 
-  function onKey(e: KeyboardEvent): void {
-    const t = document.activeElement;
-    if (t instanceof HTMLElement && t.matches('input[type="password"]')) {
+  function onKeyDown(): void {
+    noteInteraction();
+    const active = document.activeElement;
+    // Typing into the password field despite a warning is the strongest signal
+    // available: hesitation has been overridden by intent.
+    if (active instanceof HTMLElement && active.matches('input[type="password"]')) {
       signalEscalate();
     }
   }
 
-  renderStage(1);
+  function destroy(): void {
+    if (disposed) return;
+    disposed = true;
+    if (tick != null) {
+      clearInterval(tick);
+      tick = null;
+    }
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('scroll', noteInteraction, true);
+    document.removeEventListener('focusin', onFocusIn, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('visibilitychange', noteInteraction);
+    window.removeEventListener('pagehide', destroy);
+  }
 
   window.addEventListener('mousemove', onMove, { passive: true });
-  document.addEventListener('focusin', onFocus, true);
-  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', noteInteraction, { passive: true, capture: true });
+  document.addEventListener('focusin', onFocusIn, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('visibilitychange', noteInteraction);
+  // Navigating away or closing the tab stops the monitor rather than letting
+  // listeners leak into the next page.
+  window.addEventListener('pagehide', destroy);
 
-  return { destroy: dispose };
+  tick = window.setInterval(onTick, TICK_MS);
+  enterStage(FIRST_STAGE, 'start');
+
+  return {
+    currentStage: () => stage,
+    // Something is still unrevealed, or the confirmation has yet to appear.
+    hasMoreEvidence: () => stage < LAST_STAGE,
+    isFinalStage: () => stage >= LAST_STAGE,
+    advance: () => escalate('manual'),
+    destroy,
+  };
 }
