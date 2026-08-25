@@ -27,14 +27,31 @@ function evidenceList(result: DetectionResult): HTMLElement | null {
   return list;
 }
 
+export interface ModalOptions {
+  /**
+   * Show the side-by-side comparison and the full evidence list.
+   *
+   * Off for the 'modal' study condition, which is deliberately minimal: it is
+   * the control that Progressive Reveal is measured against, so if it carried
+   * the same evidence and comparison the two would be near-identical at the
+   * point of decision and the contrast under test would disappear.
+   *
+   * On for Progressive Reveal's final stage, where showing everything at once
+   * is the whole point of having got there.
+   */
+  detailed?: boolean;
+}
+
 /** Full-screen interceptor: forces an explicit choice before the user proceeds. */
-export function modalRenderer(): Renderer {
+export function modalRenderer(options: ModalOptions = {}): Renderer {
+  const detailed = options.detailed ?? false;
   let root: HTMLElement | null = null;
 
   return {
     show(result: DetectionResult, actions) {
       const { goBack, proceed } = actionButtons(actions, 'card');
-      const evidence = evidenceList(result);
+      const evidence = detailed ? evidenceList(result) : null;
+      const comparison = detailed ? result.comparison : undefined;
       const count = result.flaggedElements.length;
 
       const header = element(
@@ -55,12 +72,12 @@ export function modalRenderer(): Renderer {
 
       const card = element(
         'div',
-        'max-width:520px;width:calc(100% - 48px);max-height:calc(100vh - 64px);overflow:auto;'
+        `max-width:${detailed ? 520 : 440}px;width:calc(100% - 48px);max-height:calc(100vh - 64px);overflow:auto;`
           + 'background:#fff;color:#1c1c1c;border-radius:14px;padding:22px 24px;'
           + `box-shadow:0 18px 50px rgba(0,0,0,0.4);font:13px/1.5 ${FONT};`,
         header,
         element('p', `margin:0 0 4px;font:13px/1.5 ${FONT};color:#3c4043;`, result.reasoning),
-        ...(result.comparison ? [comparisonPanel(result.comparison)] : []),
+        ...(comparison ? [comparisonPanel(comparison)] : []),
         ...(evidence
           ? [
               element(

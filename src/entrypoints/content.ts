@@ -441,7 +441,7 @@ export default defineContentScript({
             // outlines stay up behind the modal so the evidence is still
             // visible while they choose.
             highlightEvidence(evidence, undefined, result.comparison);
-            activeRenderer = modalRenderer();
+            activeRenderer = modalRenderer({ detailed: true });
             activeRenderer.show(partial, actions);
           }
 
