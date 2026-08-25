@@ -180,12 +180,52 @@ export default defineContentScript({
       return located;
     }
 
+    /**
+     * Is this element actually on screen?
+     *
+     * Login forms are routinely inside a collapsed panel or modal, so
+     * querySelector finds them while they render 0x0. Outlining one draws an
+     * invisible box, and naming it as evidence points at nothing -- so hidden
+     * elements are not recorded as locations at all.
+     */
+    function isVisible(el: HTMLElement): boolean {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return false;
+      const style = getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+
+    /** The visible element carrying the most of the page's own keywords. */
+    function findBrandTextElement(keywords: string[]): HTMLElement | null {
+      if (keywords.length === 0) return null;
+      const top = keywords.slice(0, 5).map((k) => k.toLowerCase());
+      let best: { el: HTMLElement; hits: number } | null = null;
+      for (const el of Array.from(
+        document.querySelectorAll<HTMLElement>('h1, h2, h3, header p, main p, .hero, [class*="tagline"]'),
+      )) {
+        if (!isVisible(el)) continue;
+        const text = (el.textContent ?? '').toLowerCase();
+        const hits = top.filter((k) => text.includes(k)).length;
+        if (hits > 0 && (!best || hits > best.hits)) best = { el, hits };
+      }
+      return best?.el ?? null;
+    }
+
+    /** The visible block that carries the page's dominant colour. */
+    function findColorBlock(): HTMLElement | null {
+      for (const selector of ['header', 'nav', '[class*="hero"]', 'main']) {
+        const el = document.querySelector<HTMLElement>(selector);
+        if (el && isVisible(el) && rgbToHex(getComputedStyle(el).backgroundColor)) return el;
+      }
+      return null;
+    }
+
     /** Locate the elements a warning can point at. */
-    function locateElements(passwordField: HTMLElement | null): ElementLocation[] {
+    function locateElements(passwordField: HTMLElement | null, keywords: string[]): ElementLocation[] {
       const located: ElementLocation[] = [];
 
       const logo = findLogo();
-      if (logo) {
+      if (logo && isVisible(logo)) {
         located.push({
           selector: buildSelector(logo),
           kind: 'logo',
@@ -193,10 +233,24 @@ export default defineContentScript({
         });
       }
 
-      if (passwordField) {
+      const brandText = findBrandTextElement(keywords);
+      if (brandText) {
+        located.push({ selector: buildSelector(brandText), kind: 'brand-text' });
+      }
+
+      const colorBlock = findColorBlock();
+      if (colorBlock) {
+        located.push({
+          selector: buildSelector(colorBlock),
+          kind: 'color-block',
+          detail: rgbToHex(getComputedStyle(colorBlock).backgroundColor) ?? undefined,
+        });
+      }
+
+      if (passwordField && isVisible(passwordField)) {
         located.push({ selector: buildSelector(passwordField), kind: 'password-field' });
-        const form = passwordField.closest('form');
-        if (form) located.push({ selector: buildSelector(form), kind: 'login-form' });
+        const form = passwordField.closest<HTMLElement>('form');
+        if (form && isVisible(form)) located.push({ selector: buildSelector(form), kind: 'login-form' });
       }
 
       located.push(...locateExternalAssets());
@@ -206,15 +260,17 @@ export default defineContentScript({
     function extractDOMFeatures(): DOMFeatures {
       const passwordFields = document.querySelectorAll<HTMLElement>('input[type="password"]');
       const logo = findLogo();
+      const keywords = extractKeywords();
       return {
         url: window.location.href,
         hasLoginForm: passwordFields.length > 0,
         passwordFieldCount: passwordFields.length,
         logoCandidates: logo?.getAttribute('src') ? [logo.getAttribute('src')!] : [],
         dominantColors: extractColors(),
-        pageKeywords: extractKeywords(),
+        pageKeywords: keywords,
         title: document.title,
-        elements: locateElements(passwordFields[0] ?? null),
+        fontFamily: getComputedStyle(document.body).fontFamily,
+        elements: locateElements(passwordFields[0] ?? null, keywords),
       };
     }
 
@@ -379,12 +435,12 @@ export default defineContentScript({
           } else if (!isFinal) {
             // One more piece of evidence, marked on the page. Everything
             // already revealed stays outlined, so the picture builds up.
-            highlightEvidence(evidence, onNext);
+            highlightEvidence(evidence, onNext, result.comparison);
           } else {
             // Everything has been shown; now a decision is required. The
             // outlines stay up behind the modal so the evidence is still
             // visible while they choose.
-            highlightEvidence(evidence);
+            highlightEvidence(evidence, undefined, result.comparison);
             activeRenderer = modalRenderer();
             activeRenderer.show(partial, actions);
           }

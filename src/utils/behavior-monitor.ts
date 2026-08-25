@@ -138,10 +138,30 @@ export interface BehaviorMonitor {
   destroy(): void;
 }
 
-/** The credential field whose vicinity counts as intent to enter credentials. */
+/**
+ * The *visible* credential field whose vicinity counts as intent to enter
+ * credentials, or null if none is on screen.
+ *
+ * Visibility is essential here. A login form inside a collapsed panel still
+ * matches the selector, but a hidden element reports its rect at (0,0) with no
+ * size -- so "within 120px of the password field" silently becomes "within
+ * 120px of the top-left corner of the window", and moving the mouse up there
+ * escalates for no reason. With no visible field there is no approach to
+ * detect, and the signal is simply off.
+ */
 function credentialField(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('input[type="password"]')
-    ?? document.querySelector<HTMLElement>('input:not([type="hidden"])');
+  const candidates = [
+    ...Array.from(document.querySelectorAll<HTMLElement>('input[type="password"]')),
+    ...Array.from(document.querySelectorAll<HTMLElement>('input:not([type="hidden"])')),
+  ];
+  for (const el of candidates) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) continue;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    return el;
+  }
+  return null;
 }
 
 export function createBehaviorMonitor(options: BehaviorMonitorOptions): BehaviorMonitor {

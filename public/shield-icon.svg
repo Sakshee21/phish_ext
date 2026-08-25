@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <clipPath id="leftHalf">
+      <rect x="0" y="0" width="64" height="128"/>
+    </clipPath>
+    <clipPath id="rightHalf">
+      <rect x="64" y="0" width="64" height="128"/>
+    </clipPath>
+  </defs>
+
+  <!-- Shield shape, split into light (left) and dark (right) top/bottom quadrants -->
+  <g transform="translate(64,64) scale(1.15) translate(-64,-64)">
+    <!-- Top-left: light green -->
+    <path clip-path="url(#leftHalf)" fill="#2ecc8f"
+      d="M64 10
+         C 58 22, 46 24, 34 32
+         C 24 38, 16 34, 16 34
+         L 16 60
+         L 64 60
+         Z"/>
+    <!-- Top-right: medium green -->
+    <path clip-path="url(#rightHalf)" fill="#1fa860"
+      d="M64 10
+         C 70 22, 82 24, 94 32
+         C 104 38, 112 34, 112 34
+         L 112 60
+         L 64 60
+         Z"/>
+    <!-- Bottom-left: dark green -->
+    <path clip-path="url(#leftHalf)" fill="#0e6e3c"
+      d="M16 60 L64 60 L64 118
+         C 46 112, 28 96, 20 78
+         C 17 71, 16 65, 16 60 Z"/>
+    <!-- Bottom-right: darkest green -->
+    <path clip-path="url(#rightHalf)" fill="#0a5a30"
+      d="M112 60 L64 60 L64 118
+         C 82 112, 100 96, 108 78
+         C 111 71, 112 65, 112 60 Z"/>
+
+  <!-- Checkmark (scaled with shield) -->
+  <path fill="#ffffff"
+    d="M38 62
+       C 40 59, 44 59, 47 61
+       L 58 72
+       L 79 46
+       C 82 43, 86 43, 89 46
+       C 92 49, 92 53, 89 56
+       L 62 88
+       C 59 91, 55 91, 52 88
+       L 37 73
+       C 34 70, 35 65, 38 62 Z"/>
+  </g>
+</svg>

@@ -22,6 +22,14 @@ export interface BrandReference {
   keywords: string[];
   /** Base64-encoded logo template image (embedded in brands.json) */
   logoTemplate: string;
+  /**
+   * Small JPEG data URL of the real brand page, bundled by tools/generate.py.
+   * Detection makes no network calls, so this is the only way to show someone
+   * what the genuine site actually looks like. Absent on older datasets.
+   */
+  referenceThumbnail?: string;
+  /** Computed font-family of the real brand page. */
+  fontFamily?: string;
 }
 
 // ── Detection pipeline output ──
@@ -41,6 +49,21 @@ export interface FlaggedElement {
   note?: string;
 }
 
+/** What the genuine brand looks like, for showing beside the suspicious page. */
+export interface BrandComparison {
+  name: string;
+  /** The brand's primary official domain. */
+  officialDomain: string;
+  /** The hostname actually serving this page. */
+  actualDomain: string;
+  /** Data URL of the real page, if the dataset has one. */
+  thumbnail?: string;
+  /** The brand's real colour palette. */
+  colors: string[];
+  /** The real site's font stack, if the dataset has it. */
+  fontFamily?: string;
+}
+
 export interface DetectionResult {
   /** 0.0 (safe) – 1.0 (definitely phishing) */
   riskScore: number;
@@ -50,6 +73,8 @@ export interface DetectionResult {
   flaggedElements: FlaggedElement[];
   /** Human-readable explanation of the verdict */
   reasoning: string;
+  /** Side-by-side context: what the real brand looks like. */
+  comparison?: BrandComparison;
 }
 
 // ── DOM features extracted by the content script ──
@@ -63,7 +88,7 @@ export interface ElementLocation {
   /** CSS selector resolving to this element on the current page. */
   selector: string;
   /** What the element is. */
-  kind: 'logo' | 'login-form' | 'password-field' | 'external-asset';
+  kind: 'logo' | 'login-form' | 'password-field' | 'external-asset' | 'brand-text' | 'color-block';
   /** Extra context: a logo's src/alt, or the host an asset is loaded from. */
   detail?: string;
 }
@@ -83,6 +108,8 @@ export interface DOMFeatures {
   pageKeywords: string[];
   /** Page <title> */
   title: string;
+  /** Computed font-family of the page body, for comparison with the brand's. */
+  fontFamily?: string;
   /** Elements a warning can highlight (logo, login form, password field). */
   elements: ElementLocation[];
 }

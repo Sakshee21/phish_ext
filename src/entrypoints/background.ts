@@ -393,9 +393,11 @@ export default defineBackground(() => {
       }
 
       if (textual?.matchedKeywords.length) {
+        const brandText = features?.elements.find((e) => e.kind === 'brand-text');
         flaggedElements.push({
           element: 'page text',
           reason: 'brand_keywords',
+          selector: brandText?.selector,
           title: `Text reuses ${matchedBrand.name} wording`,
           note:
             `Wording from ${matchedBrand.name}'s real page appears here: ` +
@@ -403,11 +405,26 @@ export default defineBackground(() => {
         });
       }
 
+      // Font is a good disproof when it differs: a clone rarely licenses the
+      // brand's typeface, so it substitutes a lookalike stack.
+      const pageFont = features?.fontFamily?.trim();
+      const brandFont = matchedBrand.fontFamily?.trim();
+      if (pageFont && brandFont && pageFont.toLowerCase() !== brandFont.toLowerCase()) {
+        flaggedElements.push({
+          element: 'typeface',
+          reason: 'color_scheme',
+          title: 'Different typeface to the real site',
+          note: `This page sets ${pageFont}. ${matchedBrand.name} uses ${brandFont}.`,
+        });
+      }
+
       const colors = features ? matchingColors(features.dominantColors, matchedBrand.colors) : [];
       if (colors.length) {
+        const colorBlock = features?.elements.find((e) => e.kind === 'color-block');
         flaggedElements.push({
           element: 'colour scheme',
           reason: 'color_scheme',
+          selector: colorBlock?.selector,
           title: `Colours copy ${matchedBrand.name}`,
           note: `The page uses ${matchedBrand.name}'s palette (${colors.join(', ')}).`,
         });
@@ -488,6 +505,16 @@ export default defineBackground(() => {
       matchedBrand: matchedBrand.id,
       flaggedElements,
       reasoning,
+      comparison: domain.isSuspicious
+        ? {
+            name: matchedBrand.name,
+            officialDomain: matchedBrand.allowedDomains[0] ?? '',
+            actualDomain: domain.hostname,
+            thumbnail: matchedBrand.referenceThumbnail || undefined,
+            colors: matchedBrand.colors,
+            fontFamily: matchedBrand.fontFamily || undefined,
+          }
+        : undefined,
     };
 
     // Hand the verdict to the content script -> warning UI.

@@ -33,6 +33,7 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import re
 import subprocess
@@ -47,6 +48,14 @@ BRANDS_FILE = ROOT_DIR / "src" / "assets" / "brands" / "brands.json"
 CAPTURES_DIR = TOOLS_DIR / "captures"
 
 PHASH_THRESHOLD = 5
+
+# Reference thumbnail: a small picture of the *real* brand page, bundled so the
+# warning can show it beside the suspicious page. Detection makes no network
+# calls, so the only way to show a user what the genuine site looks like is to
+# ship it. device_scale_factor shrinks the pixels while leaving the CSS
+# viewport (and therefore the desktop layout) untouched -- ~23 KB per brand.
+THUMBNAIL_SCALE = 0.4
+THUMBNAIL_QUALITY = 60
 
 # A real desktop UA + de-automation flag: headless Chrome with the default UA
 # is far more likely to be flagged by Cloudflare/bot-checks in the first place.
@@ -206,9 +215,28 @@ DOM_EXTRACT_JS = r"""
   }
   const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([w]) => w);
 
-  return { colors, keywords, title: document.title, hostname: window.location.hostname };
+  return { colors, keywords, title: document.title, hostname: window.location.hostname,
+           fontFamily: getComputedStyle(document.body).fontFamily };
 }
 """
+
+
+def capture_thumbnail(browser, url: str, viewport: dict, brand: dict) -> str:
+    """Small JPEG of the real brand page, as a data URL. "" on failure."""
+    try:
+        page = browser.new_page(
+            viewport=viewport,
+            device_scale_factor=THUMBNAIL_SCALE,
+            user_agent=DESKTOP_UA,
+        )
+        page.goto(url, wait_until="load", timeout=30_000)
+        settle(page, brand)
+        raw = page.screenshot(type="jpeg", quality=THUMBNAIL_QUALITY, full_page=False)
+        page.close()
+        return "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+    except Exception as err:  # noqa: BLE001 - a missing thumbnail must not fail the brand
+        print(f"[generate]   !! thumbnail failed: {err}", file=sys.stderr)
+        return ""
 
 
 def extract_dom(page) -> dict:
@@ -342,6 +370,8 @@ def cmd_capture(config: dict, only: set[str] | None) -> int:
             keys_ordered = [viewport_key(v) for v in viewports]
             primary_key = next((k for k in keys_ordered if k in hashes), next(iter(hashes)))
             phash = hashes[primary_key]
+            primary_vp = next(v for v in viewports if viewport_key(v) == primary_key)
+            thumbnail = capture_thumbnail(browser, url, primary_vp, brand)
             merged[brand_id] = {
                 "id": brand_id,
                 "name": brand.get("name") or dom.get("title") or brand_id,
@@ -353,6 +383,8 @@ def cmd_capture(config: dict, only: set[str] | None) -> int:
                 "colors": dom.get("colors") or [],
                 "keywords": dom.get("keywords") or [],
                 "logoTemplate": "",
+                "referenceThumbnail": thumbnail,
+                "fontFamily": dom.get("fontFamily") or "",
             }
             captured.append(brand_id)
             print(f"[generate]   phash={phash} viewports={list(hashes)} colors={merged[brand_id]['colors']}")
