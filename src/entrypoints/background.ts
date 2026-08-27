@@ -1,8 +1,9 @@
-import type { DetectionResult, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement } from '@/lib/types';
+import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement } from '@/lib/types';
 import { loadBrands } from '@/utils/brands';
 import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
 import { ensureAssigned } from '@/utils/condition-assignment';
+import { logInteraction } from '@/utils/interaction-log';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
@@ -348,11 +349,11 @@ export default defineBackground(() => {
       };
     }
 
-    const signals = [
+    const signalSummary = [
       visual ? `visual (hamming ${visual.distance})` : null,
       textual ? `text/${textual.nameMatch} (${textual.matchedKeywords.length} keywords)` : null,
     ].filter(Boolean).join(' + ');
-    console.log(`[phish_ext] Brand "${matchedBrand.id}" identified by: ${signals}`);
+    console.log(`[phish_ext] Brand "${matchedBrand.id}" identified by: ${signalSummary}`);
 
     // Layer 2 (domain): is this host legitimate for the identified brand?
     const domain = checkDomainLegitimacy(url, matchedBrand);
@@ -500,11 +501,33 @@ export default defineBackground(() => {
         `"${domain.hostname}" is not an official ${matchedBrand.name} domain. ${domain.reason}`
       : `The page matches ${matchedBrand.name} and its domain is legitimate.`;
 
+    // The raw signals behind the verdict, for the study log. The warning UI
+    // never reads these; they exist so a researcher can see which layers fired
+    // and how hard (hash distance, keyword corroboration, domain distance).
+    const signals: DetectionSignals = {
+      ...(hash ? { phash: hash } : {}),
+      ...(visual ? { visualDistance: visual.distance } : {}),
+      ...(textual
+        ? {
+            nameMatch: textual.nameMatch,
+            matchedKeywords: textual.matchedKeywords,
+            ...(textual.lookalike ? { lookalike: textual.lookalike } : {}),
+          }
+        : {}),
+      domain: {
+        hostname: domain.hostname,
+        ...(domain.flagReason ? { flagReason: domain.flagReason } : {}),
+        ...(domain.matchedAllowedDomain ? { matchedAllowedDomain: domain.matchedAllowedDomain } : {}),
+        ...(domain.distance != null ? { distance: domain.distance } : {}),
+      },
+    };
+
     const result: DetectionResult = {
       riskScore,
       matchedBrand: matchedBrand.id,
       flaggedElements,
       reasoning,
+      signals,
       comparison: domain.isSuspicious
         ? {
             name: matchedBrand.name,
@@ -587,6 +610,15 @@ export default defineBackground(() => {
           void browser.action?.setBadgeBackgroundColor({ tabId, color: '#b3261e' });
         }
       }
+    } else if (message.type === 'LEFT_PAGE') {
+      // The content script sent this fire-and-forget on pagehide: the page
+      // context is being torn down, so it cannot write to storage itself.
+      void logInteraction('left-page', message.result, message.url, {
+        condition: message.condition,
+        visitId: message.visitId,
+        stage: message.stage,
+        includeResult: false,
+      });
     } else if (message.type === 'RESCAN') {
       // Popup condition change → re-run the pipeline so the new warning
       // condition takes effect on the current tab without navigating away.

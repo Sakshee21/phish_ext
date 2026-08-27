@@ -111,6 +111,9 @@ const TICK_MS = 500;
  */
 export type EscalationTrigger = 'start' | 'auto' | 'manual';
 
+/** A hesitation signal the monitor observed, for the study log. */
+export type HesitationSignal = 'approached' | 'focused' | 'typed';
+
 export interface BehaviorMonitorOptions {
   /** The full evidence set; each stage reveals a prefix of it. */
   flaggedElements: FlaggedElement[];
@@ -123,6 +126,13 @@ export interface BehaviorMonitorOptions {
     evidenceSlice: FlaggedElement[],
     trigger: EscalationTrigger,
   ) => void;
+  /**
+   * Called when a hesitation signal is observed: the cursor approached the
+   * credential field, focus landed in it, or the participant started typing
+   * into it. The monitor only uses these to escalate; logging them is the
+   * caller's job (they fire even when the escalation is rate-limited).
+   */
+  onSignal?: (signal: HesitationSignal) => void;
 }
 
 export interface BehaviorMonitor {
@@ -249,14 +259,21 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     const near = Math.hypot(dx, dy) <= APPROACH_PX;
 
     // Fire on *entering* the zone, not continuously while inside it.
-    if (near && !wasNearField) signalEscalate();
+    if (near && !wasNearField) {
+      options.onSignal?.('approached');
+      signalEscalate();
+    }
     wasNearField = near;
   }
+
+  let typedLogged = false;
 
   function onFocusIn(event: FocusEvent): void {
     noteInteraction();
     const target = event.target;
+    typedLogged = false;
     if (target instanceof HTMLElement && target.matches('input[type="password"]')) {
+      options.onSignal?.('focused');
       signalEscalate();
     }
   }
@@ -267,6 +284,11 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     // Typing into the password field despite a warning is the strongest signal
     // available: hesitation has been overridden by intent.
     if (active instanceof HTMLElement && active.matches('input[type="password"]')) {
+      // Log the first keystroke of a focus session, not every key.
+      if (!typedLogged) {
+        typedLogged = true;
+        options.onSignal?.('typed');
+      }
       signalEscalate();
     }
   }

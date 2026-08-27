@@ -10,6 +10,7 @@ import {
 import { renderers, type Renderer } from '@/components/renderers';
 import { modalRenderer } from '@/components/renderers/modal';
 import { resolveCondition } from '@/utils/condition-assignment';
+import type { WarningCondition } from '@/lib/conditions';
 
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -284,6 +285,31 @@ export default defineContentScript({
     let activeRenderer: Renderer | null = null;
     let activeMonitor: BehaviorMonitor | null = null;
 
+    /**
+     * The warning currently on screen, for the pagehide handler. Set whenever
+     * a warning is rendered; cleared by teardown. Terminal actions (dismiss /
+     * proceed / go back) all teardown, so a participant who acts gets exactly
+     * one terminal event; only a warning still active when the page goes away
+     * produces `left-page`.
+     */
+    interface ActiveWarning {
+      result: DetectedMessage['result'];
+      condition: WarningCondition;
+      /** Groups every event of this flagged page-load into one visit. */
+      visitId: string;
+    }
+    let currentWarning: ActiveWarning | null = null;
+
+    /** A per-visit id, stable for the lifetime of this warning. */
+    function generateVisitId(): string {
+      try {
+        return crypto.randomUUID();
+      } catch {
+        // Non-secure context (plain http on a LAN IP, say) has no randomUUID.
+        return `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+    }
+
     /** Remove whatever warning UI is on screen, including the spotlight (which
      *  lives outside the renderers' own DOM) and any running monitor. */
     /**
@@ -309,6 +335,7 @@ export default defineContentScript({
     }
 
     function teardownWarning(): void {
+      currentWarning = null;
       activeRenderer?.destroy();
       activeRenderer = null;
       activeMonitor?.destroy();
@@ -355,28 +382,42 @@ export default defineContentScript({
       console.log('[phish_ext] Rendering warning (condition:', condition + ')');
 
       teardownWarning();
+      const visitId = generateVisitId();
+      currentWarning = { result, condition, visitId };
 
       if (condition === 'progressive') {
-        await logInteraction('shown', result, window.location.href, condition, 1);
+        await logInteraction('shown', result, window.location.href, { condition, visitId, stage: 1 });
         startProgressiveReveal(result);
         return;
       }
 
-      await logInteraction('shown', result, window.location.href, condition);
+      await logInteraction('shown', result, window.location.href, { condition, visitId });
       activeRenderer = renderers[condition]();
       activeRenderer.show(result, {
         onGoBack: () => {
           teardownWarning();
-          void logInteraction('went-back', result, window.location.href, condition);
+          void logInteraction('went-back', result, window.location.href, {
+            condition,
+            visitId,
+            includeResult: false,
+          });
           sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
         },
         onProceed: () => {
           teardownWarning();
-          void logInteraction('proceeded', result, window.location.href, condition);
+          void logInteraction('proceeded', result, window.location.href, {
+            condition,
+            visitId,
+            includeResult: false,
+          });
         },
         onDismiss: () => {
           teardownWarning();
-          void logInteraction('dismissed', result, window.location.href, condition);
+          void logInteraction('dismissed', result, window.location.href, {
+            condition,
+            visitId,
+            includeResult: false,
+          });
         },
       });
     }
@@ -388,6 +429,7 @@ export default defineContentScript({
 
     function startProgressiveReveal(result: DetectedMessage['result']): void {
       const url = window.location.href;
+      const visitId = currentWarning?.visitId ?? generateVisitId();
 
       /** Terminal actions carry the stage reached -- i.e. how much evidence had
        *  been revealed when the participant acted. This is the measurement the
@@ -395,16 +437,31 @@ export default defineContentScript({
       const actionsForStage = (stage: EscalationStage) => ({
         onGoBack: () => {
           teardownWarning();
-          void logInteraction('went-back', result, url, 'progressive', stage);
+          void logInteraction('went-back', result, url, {
+            condition: 'progressive',
+            visitId,
+            stage,
+            includeResult: false,
+          });
           sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
         },
         onProceed: () => {
           teardownWarning();
-          void logInteraction('proceeded', result, url, 'progressive', stage);
+          void logInteraction('proceeded', result, url, {
+            condition: 'progressive',
+            visitId,
+            stage,
+            includeResult: false,
+          });
         },
         onDismiss: () => {
           teardownWarning();
-          void logInteraction('dismissed', result, url, 'progressive', stage);
+          void logInteraction('dismissed', result, url, {
+            condition: 'progressive',
+            visitId,
+            stage,
+            includeResult: false,
+          });
         },
       });
 
@@ -445,7 +502,18 @@ export default defineContentScript({
             activeRenderer.show(partial, actions);
           }
 
-          logStage(result, stage, trigger);
+          logStage(result, stage, trigger, visitId);
+        },
+        // Engagement micro-events: the participant headed for the credentials
+        // despite the warning. Logged with no result snapshot -- they're the
+        // "how long did they hesitate and what did they touch" data.
+        onSignal: (signal) => {
+          void logInteraction(signal, result, url, {
+            condition: 'progressive',
+            visitId,
+            stage: activeMonitor?.currentStage() ?? 1,
+            includeResult: false,
+          });
         },
       });
     }
@@ -456,10 +524,17 @@ export default defineContentScript({
       result: DetectedMessage['result'],
       stage: EscalationStage,
       trigger: EscalationTrigger,
+      visitId: string,
     ): void {
       if (trigger === 'start') return;
       console.log(`[phish_ext] Progressive Reveal -> stage ${stage} (${trigger})`);
-      void logInteraction('escalated', result, window.location.href, 'progressive', stage);
+      void logInteraction('escalated', result, window.location.href, {
+        condition: 'progressive',
+        visitId,
+        stage,
+        trigger,
+        includeResult: false,
+      });
     }
 
     // ── Send DOM features to background on load ──
@@ -485,6 +560,27 @@ export default defineContentScript({
           features: extractDOMFeatures(),
         } satisfies ExtensionMessage);
       }
+    });
+
+    // ── Terminal event when the participant leaves mid-warning ──
+    // The most common safe reaction is to just navigate away. That fired no
+    // event before: a participant who reacted at the first stage was
+    // indistinguishable from one who ignored everything. Fire-and-forget to
+    // the background (this context is about to be destroyed, so it can't await
+    // a storage write) with the stage reached, if progressive.
+    window.addEventListener('pagehide', () => {
+      const warning = currentWarning;
+      if (!warning) return;
+      const stage = activeMonitor ? activeMonitor.currentStage() : undefined;
+      teardownWarning();
+      sendToBackground({
+        type: 'LEFT_PAGE',
+        result: warning.result,
+        condition: warning.condition,
+        visitId: warning.visitId,
+        stage,
+        url: window.location.href,
+      } satisfies ExtensionMessage);
     });
   },
 });

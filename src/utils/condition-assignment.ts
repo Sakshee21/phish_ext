@@ -46,6 +46,14 @@ export const DEV_MODE: boolean =
 
 const STORAGE_KEY = 'phish_condition_assignment';
 
+/**
+ * Per-install participant ID, kept in its own key so the assignment record's
+ * shape never changes (tests and study tooling read it directly). Minted once
+ * and embedded in log exports so a researcher can attribute exports to the
+ * same install across sessions. See ensureParticipantId().
+ */
+const PARTICIPANT_KEY = 'phish_participant';
+
 export interface ConditionAssignment {
   condition: WarningCondition;
   /** When this participant was assigned, ms since epoch. */
@@ -139,7 +147,46 @@ export async function resolveCondition(): Promise<WarningCondition | null> {
  * page. Safe to call repeatedly -- it never overwrites an existing assignment.
  */
 export async function ensureAssigned(): Promise<WarningCondition | null> {
+  // Mint the participant ID first (if this install doesn't have one yet) so
+  // log exports are attributable even when the condition was already assigned
+  // on a previous run. Never overwrites.
+  await ensureParticipantId();
   return resolveCondition();
+}
+
+/**
+ * Read the install's participant ID, or null if it has never been set.
+ */
+export async function getParticipantId(): Promise<string | null> {
+  try {
+    const stored = await browser.storage.local.get(PARTICIPANT_KEY);
+    const value = stored[PARTICIPANT_KEY];
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch (err) {
+    console.error('[phish_ext] Could not read participant id:', err);
+    return null;
+  }
+}
+
+/**
+ * Ensure the install has a participant ID, minting one if missing.
+ *
+ * Same discipline as the condition assignment: minted once, read back forever,
+ * never overwritten -- a participant's logs must all carry the same ID or
+ * exports from one person become un-attributable. Safe to call repeatedly.
+ */
+export async function ensureParticipantId(): Promise<string | null> {
+  const existing = await getParticipantId();
+  if (existing) return existing;
+
+  try {
+    const id = crypto.randomUUID();
+    await browser.storage.local.set({ [PARTICIPANT_KEY]: id });
+    return id;
+  } catch (err) {
+    console.error('[phish_ext] FAILED to persist participant id:', err);
+    return null;
+  }
 }
 
 /** The full assignment record, for the dev popup and for study bookkeeping. */

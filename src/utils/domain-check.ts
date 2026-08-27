@@ -90,6 +90,17 @@ export function normalizeHomoglyphs(domain: string): string {
 }
 
 /**
+ * Result of a lookalike-domain check.
+ */
+export interface LookalikeResult {
+  matched: string;
+  reason: 'typosquatting' | 'homoglyph' | 'exact';
+  /** Edit distance to the matched domain (0 for homoglyphs -- they are
+   *  identical once visually-confusable characters are normalised). */
+  distance: number;
+}
+
+/**
  * Check if a candidate domain is likely a lookalike of any of the allowed domains.
  *
  * Returns the matched allowed domain if suspicious, or null if safe.
@@ -98,18 +109,20 @@ export function checkDomain(
   currentDomain: string,
   allowedDomains: string[],
   maxLevenshtein: number = 2,
-): { matched: string; reason: 'typosquatting' | 'homoglyph' | 'exact' } | null {
+): LookalikeResult | null {
   const normalized = normalizeHomoglyphs(currentDomain);
 
   for (const allowed of allowedDomains) {
     if (currentDomain === allowed) {
       return null; // Exact match → safe
     }
-    if (normalized === normalizeHomoglyphs(allowed)) {
-      return { matched: allowed, reason: 'homoglyph' };
+    const normalizedAllowed = normalizeHomoglyphs(allowed);
+    if (normalized === normalizedAllowed) {
+      return { matched: allowed, reason: 'homoglyph', distance: 0 };
     }
-    if (levenshtein(normalized, normalizeHomoglyphs(allowed)) <= maxLevenshtein) {
-      return { matched: allowed, reason: 'typosquatting' };
+    const distance = levenshtein(normalized, normalizedAllowed);
+    if (distance <= maxLevenshtein) {
+      return { matched: allowed, reason: 'typosquatting', distance };
     }
   }
 
@@ -128,6 +141,8 @@ export interface DomainCheckResult {
   reason?: string;
   /** The allowed domain the page's hostname is suspiciously close to, if any. */
   matchedAllowedDomain?: string;
+  /** Edit distance to `matchedAllowedDomain` (0 for homoglyphs). */
+  distance?: number;
 }
 
 /**
@@ -182,6 +197,7 @@ export function checkDomainLegitimacy(
       hostname,
       flagReason: 'typosquatting',
       matchedAllowedDomain: lookalike.matched,
+      distance: lookalike.distance,
       reason: isHomoglyph
         ? `It uses visually similar characters to the official "${lookalike.matched}" domain.`
         : `It is close to the official "${lookalike.matched}" domain (within a couple of characters).`,
