@@ -8,12 +8,13 @@ The detector combines three independent checks. Each catches cases the others mi
 
 - **Layer 2: Domain legitimacy** (background service worker). If the visual match says "this looks like Brand X" but the domain is not on that brand's allowlist, that is the core phishing signal. Also runs homoglyph/Levenshtein checks to catch typosquatting (e.g. `paypa1.com`).
 
-- **Layer 3: Element localization** (content script + canvas template matching, **in progress**). Reads the actual page DOM for login forms, logo candidates, colors, and brand keywords, and runs canvas-based logo template matching against bundled brand logo images in the offscreen document. Currently only the DOM-feature extraction stub exists; it is not yet wired into the verdict.
+- **Layer 3: Element localization** (content script + background text identification, **mostly wired**). Reads the actual page DOM for login forms, logo candidates, colors, brand keywords, external-asset hotlinks, and font family; the background identifies the brand from page text and the warning points at the concrete elements that gave it away. The remaining piece — canvas-based logo *template matching* (`MATCH_LOGOS` in the offscreen worker) — is still a stub and does not yet participate in the verdict.
 
 > **Viewport sensitivity note (Layer 1):** Screenshot-based perceptual hashing is
 > layout-dependent: resizing the browser window reflows the page and can shift a same-page hash by
 > several bits (observed ~8 in testing), well above pure capture noise (0–4). To mitigate this, the
-> dataset tooling captures each brand at three viewports (`1280x800`, `1366x768`, `1920x1080`) and
+> dataset tooling captures each brand at six viewports (`1280x800`, `1366x768`, `1440x900`,
+> `1536x864`, `1600x900`, `1920x1080`) and
 > Layer 1 compares the live capture against the *closest* of a brand's reference hashes
 > (`BrandReference.phashByViewport`), so matches remain reliable when the browsing window is near one
 > of those sizes. Because a clone and the real page shift identically under a resize, this never
@@ -33,13 +34,69 @@ Combined, they cover more cases than any single method and produce an **explaina
 ```
 Background SW ----> Offscreen Doc          (COMPUTE_PHASH -> PHASH_RESULT)
 Background SW ----> Content Script          (DETECTED)
-Content Script ---> Background SW            (PAGE_READY + DOM features, GO_BACK)
+Background SW ----> Content Script          (GET_FEATURES -> FEATURES_RESULT)   # pulled on demand
+Content Script ---> Background SW            (PAGE_READY, SET_BADGE, GO_BACK, LEFT_PAGE)
 Popup ------------> Background SW            (RESCAN)
+Popup ------------> Logs tab                 (browser.tabs.create -> /logs.html)
 ```
 
 - pHash and logo matching run in an **offscreen document** (canvas access).
 - Domain checks run in the **background service worker** (pure strings).
 - DOM extraction and warning UI run in the **content script** (page access).
+- The **logs page** (`/logs.html`, opened from the popup) reads storage directly in
+  its own extension context — it needs no messaging.
+
+> `PAGE_READY` is now vestigial: the background *pulls* DOM features on demand via
+> `GET_FEATURES` instead of relying on the push, which raced the navigation event.
+
+## Logs & study data (privacy model)
+
+The extension records every warning interaction into `storage.local` — it never
+sends anything off-device. The participant-facing **study log** page
+(`src/entrypoints/logs/`, opened from the popup) shows that record and is the
+only way it leaves the browser: the participant filters it and exports a JSON
+payload (`src/utils/log-export.ts`) that a researcher imports for the study.
+
+- Data lives under `storage.local['phish_interactions']` (bounded to the most
+  recent 500 events; see `src/utils/interaction-log.ts`). Every event carries a
+  **`visitId`** grouping all events of one flagged page-load into a single
+  visit (one per warning shown; a rescan starts a new one). Events without a
+  `visitId` (old-format data, or stale content scripts that survived a reload)
+  are **ignored** by the visitor and the export — they cannot be grouped into a
+  meaningful visit (`src/utils/visits.ts`).
+- Each event carries a **sanitized detection snapshot** (`result`): the raw
+  Layer 1/2/3 signals (screenshot pHash, hamming distance, matched keywords,
+  domain hostname + typosquat edit distance), the flagged-element list, the
+  reasoning, and the official-vs-actual domain. The base64 reference thumbnail
+  and per-element CSS selectors are stripped so events stay ~1 KB. The snapshot
+  is stored **once per visit, on the `shown` event** — later `escalated` and
+  terminal events omit it to avoid duplicating it per stage. The logs page's
+  expandable rows surface all of it; expanding a later event explains that the
+  detail lives on the visit's first event.
+- **Engagement micro-events** (`approached` / `focused` / `typed`, Progressive
+  Reveal only) record the participant heading for the credentials despite the
+  warning: cursor entering the field's 120 px zone, focusing the password
+  field, and the first keystroke of a focus session. They carry no detection
+  snapshot — they're small by design, and the `escalated` event records whether
+  the participant pulled the next stage (`trigger: 'manual'`) or was pushed
+  (`'auto'`).
+- **Visits** (`src/utils/visits.ts`) group events by `visitId` and derive the
+  study metrics: `timeToReactMs` (shown → terminal action), `engagedMs`
+  (shown → last event), `timeToFirstSignalMs`, `stagesReached`,
+  `escalationCount`, `manualAdvances`, per-signal counts, and `terminalType`.
+  A visit's `complete` flag says whether a filtered export included it whole.
+- Each install mints a stable **participant ID** (`storage.local['phish_participant']`,
+  see `src/utils/condition-assignment.ts`), embedded in every export so a
+  researcher can attribute a participant's exports across sessions.
+- The study **condition assignment** is stored once per install under
+  `phish_condition_assignment` and never re-randomised (see the warning banner in
+  `condition-assignment.ts`).
+- Exports (`src/utils/log-export.ts`, schema v3) carry only study fields —
+  participant ID, assigned condition, extension version, export time, and the
+  **visits** (nested events + metrics) — no device or browser fingerprinting.
+- The only auto-collected event that isn't a click is `left-page`, sent
+  fire-and-forget to the background on `pagehide` so a participant who reacts by
+  simply navigating away is still counted.
 
 ## Build-time dataset (Python, dev-only)
 

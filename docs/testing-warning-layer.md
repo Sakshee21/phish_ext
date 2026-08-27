@@ -53,7 +53,12 @@ A tab open across a rebuild keeps running the old content script, whose
 ```
 
 Nothing is broken; the tab is just stale. But every occurrence is a lost data
-point, so don't ignore it during a pilot.
+point, so don't ignore it during a pilot. There's a second, quieter way a stale
+script corrupts data: its old bundle writes interaction events **without a
+`visitId`**. Those can't be grouped into a visit, so the logs page and exports
+**ignore them** (you'll see "N events from an older version ignored" at the top
+of the history). That's a deliberate guard, not data recovery — reload the
+extension and reopen the tab so new events group properly.
 
 ---
 
@@ -137,9 +142,11 @@ Stage count follows the evidence: 5 pieces → 7 stages, 2 pieces → 4 stages.
   piece, 6s between pieces, 8s before the confirmation.
 - **Manually**, via the **Next** button on each popover.
 
-These are logged separately (`auto` vs `manual`). Evidence someone *sought out*
-is different behaviour from evidence pushed at them, and the two shouldn't be
-pooled.
+These are logged separately (`auto` vs `manual`) — each `escalated` event
+records its `trigger`. Evidence someone *sought out* is different behaviour
+from evidence pushed at them, and the two shouldn't be pooled. The engagement
+signals themselves are logged too, as `approached` / `focused` / `typed`
+micro-events (see §7).
 
 **Escalation is lazy, and stopping early is the intended outcome.** Someone who
 reacts at stage 1 and leaves should never see stage 2 — that's a result, not a
@@ -169,7 +176,36 @@ browser.storage.local.get('phish_interactions').then(e => console.table(e.phish_
 ```
 
 Each event carries `type` (`shown` / `escalated` / `dismissed` / `proceeded` /
-`went-back`), `condition`, and for Progressive Reveal the `stage` reached.
+`went-back` / `left-page`, plus the `approached` / `focused` / `typed`
+engagement micro-events for Progressive Reveal), `condition`, a `visitId`
+grouping all events of one flagged page-load, and for Progressive Reveal the
+`stage` reached. The full detection snapshot (signals, flagged elements,
+reasoning, comparison) is stored **once per visit on the `shown` event**; later
+events in the visit omit it to keep storage lean.
+
+**Data is structured by visit.** The viewer groups events into visit sections —
+one per flagged page-load — with a metric header per visit: `time to react`
+(shown → terminal action), `engaged` time (shown → last event), `first signal`
+time, stage reached, escalation count, manual advances, and per-signal counts.
+Each visit's events expand underneath it (rows are still expandable to the
+detection detail: pHash + Hamming distance, keyword match, domain flag with
+typosquat edit distance, flagged elements, reasoning, official-vs-actual).
+
+**The participant-facing view beats the console.** Click **View logs** in the
+popup footer to open `/logs.html`: the full history, filterable by date range,
+event type, condition, and free-text search, with the per-install participant
+ID and assigned condition shown at the top. **Export JSON** (from the same
+page) downloads a file a researcher can import — schema v3, a `visits` array
+(nested events + derived metrics) plus participant ID, assigned condition, and
+extension version — respecting whatever filters are currently applied. A
+visit's `complete: false` flag marks visits that a filter cut short, so only an
+unfiltered export should be trusted for metric-level analysis.
+
+To check the participant ID directly:
+
+```js
+browser.storage.local.get('phish_participant').then(console.log)
+```
 
 **The stage at the terminal action is the headline measurement** — how much
 evidence it took before the participant acted. That's what makes Progressive
@@ -190,10 +226,19 @@ was used, so test data stays distinguishable from real data.
 
 Worth knowing before drawing conclusions from pilot data:
 
-- **Leaving the page logs nothing.** A participant who reacts and navigates away
-  — the success case — produces no terminal event. Stage-4 modals, where people
-  are forced to click, are over-represented as a result. Needs a `pagehide`
-  event before real collection.
+- **`left-page` is best-effort, not guaranteed.** It's sent fire-and-forget to
+  the background on `pagehide`, so it survives most navigations but isn't
+  guaranteed under aggressive context teardown. It closes the old blind spot —
+  a participant who reacts by navigating away is now counted — but treat it as
+  a soft signal rather than a hard one.
+- **Micro-events exist only for Progressive Reveal.** `approached` / `focused` /
+  `typed` come from the behavior monitor, which only runs in the `progressive`
+  condition — static conditions have no engagement micro-signals. Cross-condition
+  comparisons must rely on the timing metrics (`timeToReactMs`, `engagedMs`),
+  which all conditions produce.
+- **Filtered exports break visit metrics.** The `complete` flag marks visits a
+  filter cut short; only an unfiltered export should be used for metric-level
+  analysis.
 - **Thresholds are guesses.** 6s/6s/8s and 120px are starting values, not
   findings. Pilot with ~8–10 people, look at the distribution of highest stage
   reached, then **freeze them**. Changing thresholds mid-study makes
