@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Study Log — phish_ext</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="masthead">
+        <div class="eyebrow">Phishing warning study · participant record</div>
+        <h1 class="title">Study log</h1>
+
+        <div class="identity">
+          <div class="identity-row">
+            <span class="field-label">Participant ID</span>
+            <code class="participant-id" id="participant-id" title="This participant's ID">—</code>
+            <button class="copy-btn" id="copy-id" type="button" aria-label="Copy participant ID">Copy</button>
+          </div>
+          <div class="identity-row">
+            <span class="field-label">Assigned condition</span>
+            <span class="condition-badge" id="condition-badge">—</span>
+          </div>
+        </div>
+
+        <div class="privacy-note" id="privacy-note">
+          This record is kept only on this device. Nothing is sent anywhere —
+          you decide when to hand it to the researcher by exporting.
+        </div>
+      </header>
+
+      <section class="summary" aria-label="Record summary">
+        <div class="summary-stat">
+          <span class="summary-value" id="total-visits">0</span>
+          <span class="summary-label">visits</span>
+        </div>
+        <div class="summary-stat">
+          <span class="summary-value" id="total-events">0</span>
+          <span class="summary-label">events</span>
+        </div>
+        <div class="summary-stat">
+          <span class="summary-value" id="date-range">—</span>
+          <span class="summary-label">period covered</span>
+        </div>
+        <div class="legend" id="legend" aria-label="Event type legend"></div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <div class="toolbar-head">
+            <h2 class="panel-title">Event history</h2>
+            <div class="toolbar-counts">
+              <span class="count-note" id="count-note">showing 0 of 0</span>
+              <span class="dropped-note" id="dropped-note"></span>
+            </div>
+          </div>
+
+          <div class="filters">
+            <label class="filter">
+              <span>From</span>
+              <input type="date" id="filter-from" />
+            </label>
+            <label class="filter">
+              <span>To</span>
+              <input type="date" id="filter-to" />
+            </label>
+            <label class="filter">
+              <span>Type</span>
+              <select id="filter-type"></select>
+            </label>
+            <label class="filter">
+              <span>Condition</span>
+              <select id="filter-condition"></select>
+            </label>
+            <label class="filter filter-search">
+              <span>Search</span>
+              <input type="search" id="filter-search" placeholder="Page, brand…" />
+            </label>
+          </div>
+
+<div class="toolbar-actions">
+            <button class="btn btn-ghost btn-danger" id="clear-btn" type="button">Clear history</button>
+            <button class="btn btn-ghost" id="refresh-btn" type="button">Refresh</button>
+            <button class="btn btn-primary" id="export-btn" type="button">Review & export</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="ledger">
+            <thead>
+              <tr>
+                <th class="col-expand" scope="col"><span class="sr-only">Details</span></th>
+                <th class="col-time" scope="col">Time</th>
+                <th class="col-type" scope="col">Event</th>
+                <th class="col-condition" scope="col">Condition</th>
+                <th class="col-stage" scope="col">Stage</th>
+                <th class="col-brand" scope="col">Brand</th>
+                <th class="col-risk" scope="col">Risk</th>
+                <th class="col-page" scope="col">Page</th>
+              </tr>
+            </thead>
+            <tbody id="event-body"></tbody>
+          </table>
+          <div class="empty" id="empty-state" hidden>
+            <p class="empty-title">Nothing here yet</p>
+            <p class="empty-copy" id="empty-copy">
+              No events match. Warnings appear here as they happen on pages you visit.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-overlay" id="export-modal" hidden>
+      <div class="modal" id="export-modal-panel" role="dialog" aria-modal="true" aria-labelledby="export-modal-title" tabindex="-1">
+        <div class="modal-head">
+          <div>
+            <div class="modal-eyebrow">Export preview</div>
+            <h2 class="modal-title" id="export-modal-title">Review before download</h2>
+          </div>
+          <button class="modal-close" id="modal-close" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="modal-meta" id="modal-meta"></p>
+        <pre class="modal-pre" id="json-preview"></pre>
+        <div class="modal-foot">
+          <span class="modal-size" id="modal-size"></span>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" id="copy-json-btn" type="button">Copy</button>
+            <button class="btn btn-primary" id="download-btn" type="button">Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

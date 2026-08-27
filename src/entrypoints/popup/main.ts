@@ -5,6 +5,8 @@ const statusLabel = document.querySelector<HTMLSpanElement>('#status-label')!;
 const scanCount = document.querySelector<HTMLSpanElement>('#scan-count')!;
 const threatCount = document.querySelector<HTMLSpanElement>('#threat-count')!;
 const conditionSelect = document.querySelector<HTMLSelectElement>('#condition-select')!;
+const openLogsBtn = document.querySelector<HTMLButtonElement>('#open-logs')!;
+const versionEl = document.querySelector<HTMLElement>('#version')!;
 
 import { WARNING_CONDITIONS, WARNING_CONDITION_LABELS, isWarningCondition } from '@/lib/conditions';
 import { DEV_MODE, resolveCondition, setConditionForDev } from '@/utils/condition-assignment';
@@ -41,14 +43,19 @@ if (!DEV_MODE) {
 
 // ── Stats from the interaction log ──
 
-function summarize(events: Array<{ riskScore?: number; url?: string }>): { scans: number; threats: number } {
+function summarize(events: Array<{ type?: string; riskScore?: number; url?: string }>): { scans: number; threats: number } {
   const threats = new Set<string>();
+  // A "scan" is one flagged page-load (the `shown` event of a visit). Counting
+  // every event would inflate the number with escalations and engagement
+  // micro-events, which are per-visit detail, not scans.
+  let scans = 0;
   for (const e of events) {
+    if (e.type === 'shown') scans++;
     if (typeof e.riskScore === 'number' && e.riskScore > 0.5 && typeof e.url === 'string') {
       threats.add(e.url);
     }
   }
-  return { scans: events.length, threats: threats.size };
+  return { scans, threats: threats.size };
 }
 
 async function refreshStats(): Promise<void> {
@@ -76,7 +83,15 @@ async function refreshStats(): Promise<void> {
   }
 }
 
+// ── Open the study-log viewer in a new tab ──
+// The participant's own record is a transparency page (logs.html), never
+// something pushed out of the browser. This opens it on demand.
+openLogsBtn.addEventListener('click', () => {
+  browser.tabs.create({ url: browser.runtime.getURL('/logs.html') }).catch(() => {});
+});
+
 async function init(): Promise<void> {
+  versionEl.textContent = `v${browser.runtime.getManifest().version}`;
   if (DEV_MODE) {
     const condition = await resolveCondition();
     if (condition) conditionSelect.value = condition;
