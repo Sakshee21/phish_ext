@@ -14,7 +14,8 @@
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
     "postinstall": "wxt prepare",
-    "test:phash": "node --experimental-strip-types scripts/test-phash.ts"
+    "test:phash": "node --experimental-strip-types scripts/test-phash.ts",
+    "test:visits": "node --experimental-strip-types scripts/test-visits.ts"
   },
   "devDependencies": {
     "@types/pngjs": "^6.0.5",

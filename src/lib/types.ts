@@ -1,5 +1,7 @@
 // ── Brand reference dataset (per brand, generated at build time) ──
 
+import type { WarningCondition } from '@/lib/conditions';
+
 export interface BrandReference {
   /** Brand identifier, e.g. "paypal", "google" */
   id: string;
@@ -75,6 +77,36 @@ export interface DetectionResult {
   reasoning: string;
   /** Side-by-side context: what the real brand looks like. */
   comparison?: BrandComparison;
+  /**
+   * The raw signals behind the verdict, persisted in the interaction log so
+   * a researcher can see which layers fired (and how hard) -- the live
+   * screenshot pHash + distance, the text keyword match, the domain check.
+   * The warning UI ignores it; it exists for logging and offline analysis.
+   */
+  signals?: DetectionSignals;
+}
+
+/** Raw Layer 1/2/3 signals, captured at pipeline time for the study log. */
+export interface DetectionSignals {
+  /** Perceptual hash of the live screenshot (Layer 1 input). */
+  phash?: string;
+  /** Hamming distance to the nearest brand reference (out of 64 bits). */
+  visualDistance?: number;
+  /** How the brand was identified from page text (Layer 3). */
+  nameMatch?: 'exact' | 'lookalike';
+  /** Brand keywords found in the page text. */
+  matchedKeywords?: string[];
+  /** For a lookalike name: which brand token and which page word. */
+  lookalike?: { brandToken: string; pageWord: string };
+  /** Layer 2 domain legitimacy outcome. */
+  domain?: {
+    hostname: string;
+    flagReason?: 'domain_mismatch' | 'typosquatting';
+    /** The official domain the hostname is suspiciously close to, if any. */
+    matchedAllowedDomain?: string;
+    /** Edit distance to that domain (0 for homoglyphs). */
+    distance?: number;
+  };
 }
 
 // ── DOM features extracted by the content script ──
@@ -170,6 +202,22 @@ export interface SetBadgeMessage {
   text: string | null;
 }
 
+// content → background (terminal event when the participant leaves the page
+// while a warning is active). Sent fire-and-forget on `pagehide`, because a
+// page context about to be torn down can't await a storage write; the
+// background does the actual logging.
+export interface LeftPageMessage {
+  type: 'LEFT_PAGE';
+  result: DetectionResult;
+  condition: WarningCondition | null;
+  /** Progressive Reveal stage reached, if the active condition was progressive. */
+  stage?: number;
+  /** The visit this page-load belonged to, so the terminal event groups
+   *  with its 'shown' and escalation events. */
+  visitId: string;
+  url: string;
+}
+
 // content → background (warning banner actions)
 export interface GoBackMessage {
   type: 'GO_BACK';
@@ -190,5 +238,6 @@ export type ExtensionMessage =
   | GetFeaturesMessage
   | FeaturesResultMessage
   | SetBadgeMessage
+  | LeftPageMessage
   | GoBackMessage
   | RescanMessage;

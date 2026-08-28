@@ -102,7 +102,25 @@ h1 {
 }
 
 footer {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+#open-logs {
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+#open-logs:hover {
+  background: #45475a;
 }
 
 small {
