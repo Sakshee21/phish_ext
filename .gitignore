@@ -45,3 +45,8 @@ tools/captures/*
 
 # Python virtualenv for the dataset generator.
 tools/.venv/
+
+# Windows alternate-data-stream metadata, created when a file is downloaded
+# and then read through the WSL bridge. Not real files.
+*:Zone.Identifier
+*Zone.Identifier

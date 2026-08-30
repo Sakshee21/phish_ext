@@ -24,7 +24,7 @@ export type InteractionEventType =
    * `pagehide` handler in content.ts.
    */
   | 'left-page'
-  // ── Engagement micro-events (Progressive Reveal only) ──
+  // ── Engagement micro-events (every condition) ──
   // The behavior monitor already detects these; they were only used to drive
   // escalation and never logged. Logged with a minimal payload (no result
   // snapshot) so a researcher can study hesitation mechanics, not just timing.
@@ -33,7 +33,13 @@ export type InteractionEventType =
   /** Focus landed in the password field while a warning was active. */
   | 'focused'
   /** First keystroke in the password field (once per focus session). */
-  | 'typed';
+  | 'typed'
+  /**
+   * Credentials were submitted on a flagged page -- the outcome the whole
+   * study is about. Distinct from 'typed': someone can type and think better
+   * of it, and only submission actually hands the credentials over.
+   */
+  | 'submitted';
 
 /**
  * A sanitized snapshot of the verdict, so a researcher can see *why* each

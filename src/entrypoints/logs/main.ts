@@ -30,6 +30,9 @@ const TYPE_META: Record<InteractionEventType, { label: string; color: string }> 
   approached: { label: 'Approached field', color: 'var(--violet)' },
   focused: { label: 'Focused password', color: 'var(--orange)' },
   typed: { label: 'Typed in password', color: 'var(--fuchsia)' },
+  // The worst outcome the study can record: credentials actually handed over
+  // on a flagged page. Red, alongside 'proceeded'.
+  submitted: { label: 'Submitted credentials', color: 'var(--red)' },
   dismissed: { label: 'Dismissed', color: 'var(--slate)' },
   proceeded: { label: 'Proceeded anyway', color: 'var(--red)' },
   'went-back': { label: 'Went back', color: 'var(--ok)' },
@@ -41,6 +44,7 @@ const TYPE_ORDER: InteractionEventType[] = [
   'approached',
   'focused',
   'typed',
+  'submitted',
   'dismissed',
   'proceeded',
   'went-back',
@@ -367,6 +371,7 @@ function buildVisitChips(visit: Visit): HTMLElement {
   if (m.approachCount > 0) chip(chips, `approached ×${m.approachCount}`);
   if (m.focusCount > 0) chip(chips, `focused ×${m.focusCount}`);
   if (m.typedCount > 0) chip(chips, `typed ×${m.typedCount}`);
+  if (m.submittedCount > 0) chip(chips, `submitted ×${m.submittedCount}`);
 
   if (m.terminalType) {
     const meta = TYPE_META[m.terminalType];

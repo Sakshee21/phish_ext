@@ -5,27 +5,39 @@ import type { FlaggedElement } from '@/lib/types';
  *
  * ## The model
  *
- * Progressive Reveal is ONE self-contained condition with four internal
+ * Progressive Reveal is ONE self-contained condition with internal
  * stages -- not a fallback chain, and not the other four conditions firing in
  * sequence. A participant assigned to it never experiences banner/modal/
  * tooltip/icon as conditions; those renderers are reused as *containers*
  * inside its stages, which is invisible to the participant.
  *
- * Every stage advances two things together, never one alone:
+ * Every stage advances two things together, never one alone: how much
+ * evidence is revealed, and how insistently it is presented.
  *
- *   stage 1  0 evidence items  + passive icon      (watching for a reaction)
- *   stage 2  1 evidence item   + on-page highlight (light-touch annotation)
- *   stage 3  2 evidence items  + banner
- *   stage 4  all evidence      + blocking modal    (forces a decision)
+ * The ladder is NOT a fixed four steps. Its length is derived from the
+ * verdict:
  *
- * So stage 3 is never "the same one item, but louder" -- more evidence *and*
- * a louder container, in lockstep. That pairing is what the study is testing.
+ *   stage 1          watching. Toolbar badge only, no evidence shown.
+ *   stage 1 + k      the k-th piece of evidence, outlined on the page
+ *                    (k = 1..N, earlier outlines staying up)
+ *   stage N + 2      everything outlined + a confirmation modal that
+ *                    requires an explicit decision
+ *
+ * so `finalStage(total) = total + 2`. A page yielding 6 pieces of evidence
+ * runs 8 stages; one yielding 2 runs 4.
+ *
+ * It is dynamic because the evidence count is: one page gives a copied logo,
+ * a lookalike domain, reused wording, a matching palette and a hotlinked
+ * asset, another gives two of those. Pinning the ladder at four steps would
+ * mean either cramming several pieces into one stage or padding empty ones,
+ * and both destroy the measurement -- the number of stages someone sees is
+ * meant to record how much evidence they needed before reacting.
  *
  * ## Escalation is lazy
  *
  * A stage advances only while hesitation keeps actively firing. Someone who
  * reads the stage 1 icon and leaves has *completed* the interaction -- they
- * should never see stages 2-4, and "acted at stage 1" is the result, not a
+ * should never see the later stages, and "acted at stage 1" is the result, not a
  * failure to escalate. Idle is not hesitation either: a tab left open while
  * the participant walks away must not march itself to a modal, so dwell only
  * counts while the page is visible and they have interacted recently.
@@ -77,9 +89,6 @@ const EVIDENCE_DWELL_MS = 6000;
 /** Dwell (ms) after the last piece before the confirmation is required. */
 const CONFIRM_DWELL_MS = 8000;
 
-/** Distance (px) from the credential field's box that counts as approaching. */
-const APPROACH_PX = 120;
-
 /**
  * Dwell only escalates if the participant interacted within this window (and
  * the page is visible). This is what makes escalation lazy rather than a plain
@@ -105,9 +114,6 @@ const REQUIRE_HESITATION_AFTER_FIRST_REVEAL = true;
 
 /** Minimum gap between signal-driven escalations. */
 const SIGNAL_COOLDOWN_MS = 1500;
-
-/** mousemove sampling interval (ms). */
-const MOVE_THROTTLE_MS = 150;
 
 /** How often the dwell check re-evaluates. */
 const TICK_MS = 500;
@@ -151,6 +157,15 @@ export interface BehaviorMonitorOptions {
 }
 
 export interface BehaviorMonitor {
+  /**
+   * Report a hesitation signal observed by the shared engagement tracker.
+   *
+   * The monitor deliberately does not detect these itself: they are the
+   * study's primary outcome and must be measured identically for every
+   * condition, so one tracker owns detection and Progressive Reveal is simply
+   * the only condition that also *acts* on them.
+   */
+  noteHesitation(signal: HesitationSignal): void;
   /** The stage currently showing -- log this alongside terminal actions. */
   currentStage(): EscalationStage;
   /** True while evidence remains to reveal (i.e. a "Next" should be offered). */
@@ -163,32 +178,6 @@ export interface BehaviorMonitor {
   destroy(): void;
 }
 
-/**
- * The *visible* credential field whose vicinity counts as intent to enter
- * credentials, or null if none is on screen.
- *
- * Visibility is essential here. A login form inside a collapsed panel still
- * matches the selector, but a hidden element reports its rect at (0,0) with no
- * size -- so "within 120px of the password field" silently becomes "within
- * 120px of the top-left corner of the window", and moving the mouse up there
- * escalates for no reason. With no visible field there is no approach to
- * detect, and the signal is simply off.
- */
-function credentialField(): HTMLElement | null {
-  const candidates = [
-    ...Array.from(document.querySelectorAll<HTMLElement>('input[type="password"]')),
-    ...Array.from(document.querySelectorAll<HTMLElement>('input:not([type="hidden"])')),
-  ];
-  for (const el of candidates) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) continue;
-    const style = getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') continue;
-    return el;
-  }
-  return null;
-}
-
 export function createBehaviorMonitor(options: BehaviorMonitorOptions): BehaviorMonitor {
   const { flaggedElements, onEscalate } = options;
 
@@ -197,8 +186,6 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
   let stageEnteredAt = Date.now();
   let lastInteractionAt = Date.now();
   let lastSignalEscalation = 0;
-  let lastMoveSampledAt = 0;
-  let wasNearField = false;
   /** When a hesitation signal last fired (approach / focus / typing). */
   let lastHesitationAt = 0;
   let tick: number | null = null;
@@ -229,7 +216,7 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
 
   /**
    * Escalation from a discrete signal, rate-limited so a burst of keystrokes
-   * cannot jump straight from stage 1 to stage 4.
+   * cannot jump several stages at once.
    */
   function signalEscalate(): void {
     const now = Date.now();
@@ -268,52 +255,17 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     escalate();
   }
 
-  function onMove(event: MouseEvent): void {
+  /** Any activity at all, which only keeps the engagement window alive. */
+  function onActivity(): void {
     noteInteraction();
-    const now = Date.now();
-    if (now - lastMoveSampledAt < MOVE_THROTTLE_MS) return;
-    lastMoveSampledAt = now;
-
-    const field = credentialField();
-    if (!field) return;
-    const box = field.getBoundingClientRect();
-    const dx = Math.max(box.left - event.clientX, 0, event.clientX - box.right);
-    const dy = Math.max(box.top - event.clientY, 0, event.clientY - box.bottom);
-    const near = Math.hypot(dx, dy) <= APPROACH_PX;
-
-    // Fire on *entering* the zone, not continuously while inside it.
-    if (near && !wasNearField) {
-      options.onSignal?.('approached');
-      signalEscalate();
-    }
-    wasNearField = near;
   }
 
-  let typedLogged = false;
-
-  function onFocusIn(event: FocusEvent): void {
+  /** A hesitation signal from the shared tracker: they are still heading for
+   *  the credentials, so the next piece of evidence is warranted. */
+  function noteHesitation(_signal: HesitationSignal): void {
+    if (disposed) return;
     noteInteraction();
-    const target = event.target;
-    typedLogged = false;
-    if (target instanceof HTMLElement && target.matches('input[type="password"]')) {
-      options.onSignal?.('focused');
-      signalEscalate();
-    }
-  }
-
-  function onKeyDown(): void {
-    noteInteraction();
-    const active = document.activeElement;
-    // Typing into the password field despite a warning is the strongest signal
-    // available: hesitation has been overridden by intent.
-    if (active instanceof HTMLElement && active.matches('input[type="password"]')) {
-      // Log the first keystroke of a focus session, not every key.
-      if (!typedLogged) {
-        typedLogged = true;
-        options.onSignal?.('typed');
-      }
-      signalEscalate();
-    }
+    signalEscalate();
   }
 
   function destroy(): void {
@@ -323,18 +275,16 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
       clearInterval(tick);
       tick = null;
     }
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('scroll', noteInteraction, true);
-    document.removeEventListener('focusin', onFocusIn, true);
-    document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('mousemove', onActivity);
+    window.removeEventListener('scroll', onActivity, true);
+    document.removeEventListener('keydown', onActivity, true);
     document.removeEventListener('visibilitychange', noteInteraction);
     window.removeEventListener('pagehide', destroy);
   }
 
-  window.addEventListener('mousemove', onMove, { passive: true });
-  window.addEventListener('scroll', noteInteraction, { passive: true, capture: true });
-  document.addEventListener('focusin', onFocusIn, true);
-  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('mousemove', onActivity, { passive: true });
+  window.addEventListener('scroll', onActivity, { passive: true, capture: true });
+  document.addEventListener('keydown', onActivity, true);
   document.addEventListener('visibilitychange', noteInteraction);
   // Navigating away or closing the tab stops the monitor rather than letting
   // listeners leak into the next page.
@@ -344,6 +294,7 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
   enterStage(FIRST_STAGE, 'start');
 
   return {
+    noteHesitation,
     currentStage: () => stage,
     // Something is still unrevealed, or the confirmation has yet to appear.
     hasMoreEvidence: () => stage < LAST_STAGE,

@@ -10,6 +10,7 @@ import {
 import { renderers, type Renderer } from '@/components/renderers';
 import { modalRenderer } from '@/components/renderers/modal';
 import { resolveCondition } from '@/utils/condition-assignment';
+import { createEngagementTracker, type EngagementTracker } from '@/utils/engagement-tracker';
 import type { WarningCondition } from '@/lib/conditions';
 
 export default defineContentScript({
@@ -284,6 +285,21 @@ export default defineContentScript({
 
     let activeRenderer: Renderer | null = null;
     let activeMonitor: BehaviorMonitor | null = null;
+    let activeEngagement: EngagementTracker | null = null;
+    /**
+     * The last Progressive Reveal stage this visit reached, kept after the
+     * monitor is gone.
+     *
+     * Engagement tracking outlives the warning, so a participant can dismiss
+     * at stage 2 and then type. Without this, those later events carry no
+     * stage and "of the people who bailed at stage N, how many typed anyway"
+     * needs a manual join on visitId to answer.
+     *
+     * Stays null for banner/modal/tooltip/icon: they have no escalation model,
+     * so a stage number would be meaningless there and the field is omitted
+     * entirely rather than filled with a placeholder.
+     */
+    let finalStageReached: number | null = null;
 
     /**
      * The warning currently on screen, for the pagehide handler. Set whenever
@@ -338,10 +354,24 @@ export default defineContentScript({
       currentWarning = null;
       activeRenderer?.destroy();
       activeRenderer = null;
-      activeMonitor?.destroy();
-      activeMonitor = null;
+      if (activeMonitor) {
+        finalStageReached = activeMonitor.currentStage();
+        activeMonitor.destroy();
+        activeMonitor = null;
+      }
       clearHighlight();
       setBadge(null);
+      // Engagement tracking deliberately survives this. Dismissing a warning
+      // ends the *warning*, not the measurement: what the participant does
+      // next -- approach the field, type, submit -- is the study's primary
+      // outcome, and is often the most interesting part of the visit.
+    }
+
+    /** Stop engagement tracking. Only when the page goes away, or a new
+     *  warning replaces this one. */
+    function stopEngagement(): void {
+      activeEngagement?.destroy();
+      activeEngagement = null;
     }
 
     function renderWarning(result: DetectedMessage['result']): void {
@@ -384,6 +414,39 @@ export default defineContentScript({
       teardownWarning();
       const visitId = generateVisitId();
       currentWarning = { result, condition, visitId };
+
+      // Engagement tracking runs for every condition, identically. Whether the
+      // participant went for the credentials anyway is the study's primary
+      // outcome, so it cannot be measured only where the UI happens to use it.
+      // 'submitted' is sent via the background: the page starts unloading on
+      // submit, so a storage write from here would not finish.
+      stopEngagement();
+      finalStageReached = null;
+      activeEngagement = createEngagementTracker((signal) => {
+        // While the monitor is alive its current stage wins; once it is gone,
+        // fall back to the stage this visit reached. Undefined for the static
+        // conditions, where neither exists.
+        const stage = activeMonitor?.currentStage() ?? finalStageReached ?? undefined;
+        if (signal === 'submitted') {
+          sendToBackground({
+            type: 'SUBMITTED',
+            result,
+            condition,
+            visitId,
+            stage,
+            url: window.location.href,
+          } satisfies ExtensionMessage);
+        } else {
+          void logInteraction(signal, result, window.location.href, {
+            condition,
+            visitId,
+            stage,
+            includeResult: false,
+          });
+        }
+        // Progressive Reveal is the only condition that also *acts* on these.
+        activeMonitor?.noteHesitation(signal === 'submitted' ? 'typed' : signal);
+      });
 
       if (condition === 'progressive') {
         await logInteraction('shown', result, window.location.href, { condition, visitId, stage: 1 });
@@ -511,17 +574,6 @@ export default defineContentScript({
 
           logStage(result, stage, trigger, visitId);
         },
-        // Engagement micro-events: the participant headed for the credentials
-        // despite the warning. Logged with no result snapshot -- they're the
-        // "how long did they hesitate and what did they touch" data.
-        onSignal: (signal) => {
-          void logInteraction(signal, result, url, {
-            condition: 'progressive',
-            visitId,
-            stage: activeMonitor?.currentStage() ?? 1,
-            includeResult: false,
-          });
-        },
       });
     }
 
@@ -580,6 +632,7 @@ export default defineContentScript({
       if (!warning) return;
       const stage = activeMonitor ? activeMonitor.currentStage() : undefined;
       teardownWarning();
+      stopEngagement();
       sendToBackground({
         type: 'LEFT_PAGE',
         result: warning.result,

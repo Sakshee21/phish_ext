@@ -619,6 +619,14 @@ export default defineBackground(() => {
         stage: message.stage,
         includeResult: false,
       });
+    } else if (message.type === 'SUBMITTED') {
+      // Fire-and-forget from the content script: the page is navigating away.
+      void logInteraction('submitted', message.result, message.url, {
+        condition: message.condition,
+        visitId: message.visitId,
+        stage: message.stage,
+        includeResult: false,
+      });
     } else if (message.type === 'RESCAN') {
       // Popup condition change → re-run the pipeline so the new warning
       // condition takes effect on the current tab without navigating away.

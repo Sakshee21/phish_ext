@@ -53,6 +53,14 @@ export interface VisitMetrics {
   approachCount: number;
   focusCount: number;
   typedCount: number;
+  /**
+   * Times credentials were actually submitted on this flagged page.
+   *
+   * The study's primary outcome. Kept separate from typedCount because typing
+   * and submitting are different decisions -- someone can type and think
+   * better of it, and only submission hands the credentials over.
+   */
+  submittedCount: number;
   /** The terminal event type, or null if the visit has no terminal action. */
   terminalType: InteractionEventType | null;
 }
@@ -97,6 +105,7 @@ function computeMetrics(
   let approachCount = 0;
   let focusCount = 0;
   let typedCount = 0;
+  let submittedCount = 0;
 
   for (const e of sorted) {
     if (e.type === 'escalated') {
@@ -106,6 +115,7 @@ function computeMetrics(
     if (e.type === 'approached') approachCount++;
     if (e.type === 'focused') focusCount++;
     if (e.type === 'typed') typedCount++;
+    if (e.type === 'submitted') submittedCount++;
     if (e.stage != null && (stagesReached === null || e.stage > stagesReached)) {
       stagesReached = e.stage;
     }
@@ -121,6 +131,7 @@ function computeMetrics(
     approachCount,
     focusCount,
     typedCount,
+    submittedCount,
     terminalType,
   };
 }

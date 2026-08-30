@@ -128,31 +128,37 @@ This is the condition that differentiates the project from prior explainable-war
 
 ```
 Stage 1 — Minimal signal, no evidence yet
-  Icon changes only. The system is still "watching" to see if the
-  user notices and backs away on their own.
+  Toolbar badge only. Nothing is injected into the page; the system is
+  still "watching" to see if the user notices and backs away on their own.
 
-Stage 2 — First piece of evidence
-  Banner stage with the flagged element highlighted: outline the single most
-  obvious flagged element (when Layer 3 supplies a CSS selector) alongside a
-  short reason.
-  e.g. "This page's domain isn't an official PayPal domain."
-  (Until Layer 3 provides selectors, the highlight is a no-op and the banner
-  carries the first evidence piece on its own.)
+Stage 1 + k — One reveal stage per piece of evidence
+  The k-th flagged element is outlined directly on the page with a one-line
+  reason, and every element revealed before it stays outlined, so the picture
+  builds up rather than being replaced.
+  e.g. first the copied logo, then the unofficial domain, then the reused
+  wording, then the matching colour palette.
 
-Stage 3 — Additional evidence
-  Banner stage: add a second piece of reasoning alongside the first.
-  e.g. "...and the page's logo doesn't match PayPal's."
-  (Currently only the domain flag exists, so the banner re-states the revealed
-  evidence until Layer 3 enriches the flags.)
-
-Stage 4 — Full evidence, hard stop
-  Modal stage: reveal the complete reasoning (all flagged elements)
-  and force an explicit decision before the user can proceed.
+Final stage — Full evidence, hard stop
+  Everything stays outlined and a modal reveals the complete reasoning
+  side by side with the real site, forcing an explicit decision.
 ```
 
-A user who notices and backs away at Stage 1 or 2 never sees the fuller evidence or the more intrusive container — they were never confused enough to need it. A user who keeps heading toward the password field gets progressively more explanation *and* a progressively harder-to-ignore container, in lockstep.
+**The ladder length is derived from the verdict, not fixed:**
+`finalStage(total) = total + 2` — one watching stage, one reveal stage per
+piece of evidence, one confirmation. Six pieces of evidence runs 8 stages;
+two runs 4.
 
-**Implementation:** a dedicated `behavior-monitor.ts` utility (see Project Structure below) owns the hesitation-tracking and the state machine, and calls into the banner/modal/icon renderers to display each stage's container, parameterized by how much of the `flaggedElements`/`reasoning` payload to reveal at that stage. Progressive Reveal *composes* the static renderers and the detection pipeline's evidence data rather than duplicating either.
+This is deliberate. The evidence count varies per page: one clone yields a
+copied logo, a lookalike domain, reused wording, a matching palette and a
+hotlinked asset; another yields two of those. A fixed four-stage ladder would
+have to cram several pieces into one stage or pad out empty ones, and either
+wrecks the measurement — the number of stages a participant sees is meant to
+record *how much evidence they needed before reacting*, so it has to scale
+with how much evidence there is.
+
+A user who notices and backs away at an early stage never sees the fuller evidence or the confirmation — they were never confused enough to need it, and a terminal action halts the machine permanently. A user who keeps heading toward the password field gets progressively more explanation *and* a progressively harder-to-ignore container, in lockstep.
+
+**Implementation:** a dedicated `behavior-monitor.ts` utility (see Project Structure below) owns the hesitation-tracking and the state machine, and calls back with each stage's evidence slice so the caller can render it, parameterized by how much of the `flaggedElements`/`reasoning` payload to reveal at that stage. Progressive Reveal *composes* the static renderers and the detection pipeline's evidence data rather than duplicating either.
 
 **Logging:** identical to the other four conditions (`shown` / `dismissed` / `proceeded` / `went-back`), plus the specific stage reached (i.e. how much evidence the user had been shown) at the time of the final action. This is the data point that lets the evaluation study ask not just "did the warning work" but "how much explanation did it actually take before the user reacted."
 

@@ -206,6 +206,22 @@ export interface SetBadgeMessage {
 // while a warning is active). Sent fire-and-forget on `pagehide`, because a
 // page context about to be torn down can't await a storage write; the
 // background does the actual logging.
+/**
+ * Credentials were actually submitted on a flagged page.
+ *
+ * Sent to the background rather than logged in place: submitting starts a
+ * navigation, so a storage write from the content script would usually not
+ * finish. Same reason as LEFT_PAGE.
+ */
+export interface SubmittedMessage {
+  type: 'SUBMITTED';
+  result: DetectionResult;
+  condition: WarningCondition | null;
+  stage?: number;
+  visitId: string;
+  url: string;
+}
+
 export interface LeftPageMessage {
   type: 'LEFT_PAGE';
   result: DetectionResult;
@@ -239,5 +255,6 @@ export type ExtensionMessage =
   | FeaturesResultMessage
   | SetBadgeMessage
   | LeftPageMessage
+  | SubmittedMessage
   | GoBackMessage
   | RescanMessage;
