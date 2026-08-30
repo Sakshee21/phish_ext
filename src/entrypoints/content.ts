@@ -1,6 +1,6 @@
 import type { DOMFeatures, DetectedMessage, ElementLocation, ExtensionMessage } from '@/lib/types';
 import { logInteraction } from '@/utils/interaction-log';
-import { clearHighlight, highlightEvidence } from '@/utils/driver-highlight';
+import { clearHighlight, hidePopover, highlightEvidence } from '@/utils/driver-highlight';
 import {
   createBehaviorMonitor,
   type BehaviorMonitor,
@@ -492,12 +492,19 @@ export default defineContentScript({
           } else if (!isFinal) {
             // One more piece of evidence, marked on the page. Everything
             // already revealed stays outlined, so the picture builds up.
-            highlightEvidence(evidence, onNext, result.comparison);
+            highlightEvidence(evidence, {
+              onNext,
+              comparison: result.comparison,
+              actions,
+              // Clears the bubble only -- outlines stay, escalation continues,
+              // and nothing is logged, because this is not a decision.
+              onSkip: hidePopover,
+            });
           } else {
             // Everything has been shown; now a decision is required. The
             // outlines stay up behind the modal so the evidence is still
             // visible while they choose.
-            highlightEvidence(evidence, undefined, result.comparison);
+            highlightEvidence(evidence, { outlinesOnly: true });
             activeRenderer = modalRenderer({ detailed: true });
             activeRenderer.show(partial, actions);
           }

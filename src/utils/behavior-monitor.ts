@@ -88,6 +88,21 @@ const APPROACH_PX = 120;
  */
 const ENGAGEMENT_WINDOW_MS = 10_000;
 
+/**
+ * Beyond the first reveal, dwell alone is not enough: a *hesitation* signal
+ * (cursor approaching the credential field, focus landing in it, typing) must
+ * have fired since the current stage appeared.
+ *
+ * Without this, any mouse movement anywhere on the page counted as engagement,
+ * so evidence marched forward on a 6-second clock whether or not the
+ * participant was still heading for the credentials -- which is the thing the
+ * escalation is supposed to be responding to. Someone who reads the first
+ * piece of evidence and stops now stays where they are; the count of stages
+ * they saw stays a measurement of what they needed, not of how long they left
+ * the tab open.
+ */
+const REQUIRE_HESITATION_AFTER_FIRST_REVEAL = true;
+
 /** Minimum gap between signal-driven escalations. */
 const SIGNAL_COOLDOWN_MS = 1500;
 
@@ -184,6 +199,8 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
   let lastSignalEscalation = 0;
   let lastMoveSampledAt = 0;
   let wasNearField = false;
+  /** When a hesitation signal last fired (approach / focus / typing). */
+  let lastHesitationAt = 0;
   let tick: number | null = null;
 
   const total = flaggedElements.length;
@@ -216,6 +233,7 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
    */
   function signalEscalate(): void {
     const now = Date.now();
+    lastHesitationAt = now;
     if (now - lastSignalEscalation < SIGNAL_COOLDOWN_MS) return;
     lastSignalEscalation = now;
     escalate();
@@ -240,6 +258,11 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     // the stage persists -- it does not skip ahead once they come back.
     if (!isEngaged()) {
       stageEnteredAt = Date.now();
+      return;
+    }
+    // Past the first reveal, require that they are still moving toward the
+    // credentials. Reading the evidence and stopping ends the escalation.
+    if (REQUIRE_HESITATION_AFTER_FIRST_REVEAL && stage > 1 && lastHesitationAt < stageEnteredAt) {
       return;
     }
     escalate();

@@ -8,6 +8,7 @@ import { driver, type DriveStep } from 'driver.js';
 import driverCss from 'driver.js/dist/driver.css?inline';
 
 import type { BrandComparison, FlaggedElement } from '@/lib/types';
+import type { WarningActions } from '@/components/renderers/types';
 
 /**
  * Driver.js adapter for Progressive Reveal's stage 2 container.
@@ -24,6 +25,12 @@ import type { BrandComparison, FlaggedElement } from '@/lib/types';
  */
 
 let activeHighlight: ReturnType<typeof driver> | null = null;
+/**
+ * True while we are destroying the popover ourselves (a stage transition).
+ * Driver.js fires onDestroyed either way, and without this a normal
+ * escalation would be logged as though the participant had dismissed it.
+ */
+let tearingDownInternally = false;
 let styleElement: HTMLStyleElement | null = null;
 let outlineLayer: HTMLElement | null = null;
 let repositionOutlines: (() => void) | null = null;
@@ -32,21 +39,53 @@ const OUTLINE_ID = 'phish-ext-evidence-outlines';
 
 /** Styling for our popover additions, appended to Driver.js's own stylesheet. */
 const EXTRA_CSS = `
-.phish-popover .driver-popover-title { color: #b3261e; font-size: 13.5px; }
-.phish-popover .driver-popover-description { font-size: 12.5px; line-height: 1.5; color: #3c4043; }
+/* Driver.js resets only the popover wrapper (all:unset); its children inherit
+   whatever the host page declares. On a dark-themed site that paints the
+   description black-on-black, so every child is pinned explicitly here. */
+.phish-popover, .phish-popover * {
+  box-sizing: border-box !important;
+  text-shadow: none !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  float: none !important;
+}
+.phish-popover { background: #fff !important; color: #3c4043 !important; }
+.phish-popover .driver-popover-title,
+.phish-popover .driver-popover-description,
+.phish-popover .driver-popover-footer {
+  background: none !important; background-color: transparent !important;
+  border: 0 !important; box-shadow: none !important;
+  min-height: 0 !important; min-width: 0 !important;
+  margin-left: 0 !important; margin-right: 0 !important; padding: 0 !important;
+}
+.phish-popover .driver-popover-title { color: #b3261e !important; font-size: 13.5px !important; font-weight: 700 !important; }
+.phish-popover .driver-popover-description { font-size: 12.5px !important; line-height: 1.5 !important; color: #3c4043 !important; margin-top: 5px !important; }
+.phish-popover .driver-popover-description div { background: none !important; background-color: transparent !important; }
 .phish-popover .phish-compare {
   display: flex; align-items: center; gap: 6px; margin-top: 8px;
   font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .phish-popover .phish-compare-bad {
-  background: rgba(179,38,30,0.09); color: #8c1d18;
-  border: 1px solid rgba(179,38,30,0.25); border-radius: 4px; padding: 2px 6px;
+  background-color: rgba(179,38,30,0.09) !important; color: #8c1d18 !important;
+  border: 1px solid rgba(179,38,30,0.25) !important; border-radius: 4px; padding: 2px 6px !important;
 }
 .phish-popover .phish-compare-good {
-  background: rgba(30,125,52,0.09); color: #155d27;
-  border: 1px solid rgba(30,125,52,0.25); border-radius: 4px; padding: 2px 6px;
+  background-color: rgba(30,125,52,0.09) !important; color: #155d27 !important;
+  border: 1px solid rgba(30,125,52,0.25) !important; border-radius: 4px; padding: 2px 6px !important;
 }
 .phish-popover .phish-compare-vs { color: #9aa0a6; font-weight: 500; }
+.phish-popover .phish-btn {
+  all: unset; cursor: pointer; border-radius: 5px; padding: 4px 10px;
+  font: 600 12px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #5f6368; border: 1px solid #d0d7de; margin-right: 6px;
+}
+.phish-popover .phish-btn-strong { color: #fff !important; background-color: #b3261e !important; border-color: #b3261e !important; }
+/* The overlay is fully transparent here, but it still sits over the page and
+   swallows every click -- so the participant could neither use the page nor
+   click anything without it registering as "clicked outside". Let pointer
+   events through; the popover itself stays interactive. */
+.driver-overlay { pointer-events: none !important; }
+.driver-popover { pointer-events: auto !important; }
 `;
 
 /**
@@ -157,9 +196,25 @@ function ensureStyles(): void {
   (document.head ?? document.documentElement).append(styleElement);
 }
 
+/**
+ * Hide the popover but keep the outlines and the session.
+ *
+ * Not a decision: nothing is logged and the monitor keeps running, so the
+ * participant can clear the bubble off something they want to read without
+ * that counting as a reaction to the warning.
+ */
+export function hidePopover(): void {
+  tearingDownInternally = true;
+  activeHighlight?.destroy();
+  tearingDownInternally = false;
+  activeHighlight = null;
+}
+
 /** Destroy any highlight currently on screen, and remove its stylesheet. */
 export function clearHighlight(): void {
+  tearingDownInternally = true;
   activeHighlight?.destroy();
+  tearingDownInternally = false;
   activeHighlight = null;
   clearOutlines();
   styleElement?.remove();
@@ -236,11 +291,50 @@ function stepForElement(
  * participant could page through would let them reach evidence the current
  * stage has not revealed yet, which would defeat the whole design.
  */
+export interface HighlightOptions {
+  /** Reveal the next piece of evidence. Omitted at the final stage. */
+  onNext?: () => void;
+  /**
+   * Draw the outlines but no popover. Used at the confirmation stage, where
+   * the modal is already asking for a decision -- a popover beside it would
+   * be two things talking at once.
+   */
+  outlinesOnly?: boolean;
+  /** Side-by-side context shown in the popover. */
+  comparison?: BrandComparison;
+  /**
+   * Terminal actions. Every stage must offer a way out: the number of stages
+   * someone sees is a measurement of how much evidence they needed, so a
+   * participant who has already decided must be able to act immediately
+   * rather than being walked through the remaining evidence.
+   */
+  actions?: WarningActions;
+  /**
+   * Close this popover without ending the warning.
+   *
+   * Deliberately distinct from Dismiss. A popover can sit over something the
+   * participant wants to read, and wanting it out of the way is not the same
+   * as having decided about the page -- so this is not logged as a decision,
+   * and the outlines and the escalation both continue.
+   */
+  onSkip?: () => void;
+}
+
+/** A footer button matching the popover's own styling. */
+function footerButton(label: string, tone: 'plain' | 'strong', onClick: () => void): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.className = tone === 'strong' ? 'phish-btn phish-btn-strong' : 'phish-btn';
+  button.addEventListener('click', onClick);
+  return button;
+}
+
 export function highlightEvidence(
   evidence: FlaggedElement[],
-  onNext?: () => void,
-  comparison?: BrandComparison,
+  options: HighlightOptions = {},
 ): void {
+  const { onNext, comparison, actions, outlinesOnly, onSkip } = options;
   clearHighlight();
 
   if (evidence.length === 0) return;
@@ -251,6 +345,8 @@ export function highlightEvidence(
   // evidence (the domain, reused wording) is not a thing on the page, so it
   // gets a popover but no outline -- it still has to be shown.
   drawOutlines(evidence.filter((f) => f.selector));
+  if (outlinesOnly) return;
+
   const newest = evidence[evidence.length - 1]!;
 
   activeHighlight = driver({
@@ -262,10 +358,28 @@ export function highlightEvidence(
     stagePadding: 6,
     showProgress: false,
     showButtons: onNext ? ['next'] : [],
-    allowClose: true,
+    // Explicit buttons are the only way out. Closing on an outside click made
+    // any stray click on the page log a dismissal the participant never chose.
+    allowClose: false,
     // Advancing means "reveal more evidence", which is the monitor's business.
     // Driver.js must not step within its own (single-step) tour.
     onNextClick: () => onNext?.(),
+    // Driver can still be torn down by something other than a stage change
+    // (ESC, for one). Treat that as a real dismissal so the monitor stops
+    // rather than re-rendering at the next tick.
+    onDestroyed: () => {
+      if (!tearingDownInternally) actions?.onDismiss();
+    },
+    // Driver.js only knows next/previous/close, so the other exits are added
+    // to the footer directly.
+    onPopoverRender: (popover) => {
+      if (!actions) return;
+      popover.footerButtons.prepend(
+        footerButton('Go Back', 'strong', actions.onGoBack),
+        footerButton('Dismiss', 'plain', actions.onDismiss),
+        ...(onSkip ? [footerButton('Skip', 'plain', onSkip)] : []),
+      );
+    },
   });
 
   activeHighlight.drive();
