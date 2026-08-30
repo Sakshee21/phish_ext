@@ -641,7 +641,7 @@ refreshBtn.addEventListener('click', () => void load());
 // participant). The site's /api/upload verifies the Google token and attributes
 // the upload by email.
 
-/** Submission site origin; set WXT_SUBMISSION_SITE in the extension .env. */
+/** Submission site origin (injected at build time from wxt.config). */
 const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
 
 function setShareStatus(text: string, isError = false): void {
@@ -651,7 +651,7 @@ function setShareStatus(text: string, isError = false): void {
 
 if (!submissionSite) {
   shareBtn.disabled = true;
-  shareBtn.title = 'Submission site not configured (set WXT_SUBMISSION_SITE)';
+  shareBtn.title = 'Submission site not configured';
 }
 
 shareBtn.addEventListener('click', async () => {

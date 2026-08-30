@@ -17,9 +17,8 @@ stuff/
 .agents/
 .claude/
 
-# Build-time env for the extension (WXT_/VITE_ prefixed). Never commit.
-.env
-.env.local
+# Private half of the pinned extension key (public half is in wxt.config.ts).
+dev-key.pem
 
 # Editor directories and files
 .vscode/*

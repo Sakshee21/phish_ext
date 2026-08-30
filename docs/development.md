@@ -93,8 +93,8 @@ phish_ext/
   JSON export (`utils/log-export.ts`) for researchers. Nothing leaves the device except via that export.
   A **Send to study** button uploads the current view straight to the submission site using the
   participant's Google account via `chrome.identity` (needs the `identity` permission + the
-  `oauth2.client_id` in `wxt.config.ts`). The site origin is set with the `WXT_SUBMISSION_SITE`
-  env var (in `.env`, gitignored); the button is disabled when it's unset.
+  `oauth2.client_id` in `wxt.config.ts`). The site origin is set in `wxt.config.ts`
+  (`DEV_SUBMISSION_SITE` / `PROD_SUBMISSION_SITE`); the button is disabled when it's empty.
 - Dataset tooling — `tools/generate.sh` captures brands at multiple viewports and writes `brands.json` (see `tools/README.md`).
 
 **Next:**
