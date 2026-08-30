@@ -94,6 +94,8 @@ const conditionBadge = $('.condition-badge');
 const copyBtn = $('#copy-id');
 const refreshBtn = $('#refresh-btn');
 const clearBtn = $('#clear-btn');
+const shareBtn = $('#share-btn') as HTMLButtonElement;
+const shareStatus = $('#share-status');
 const exportBtn = $('#export-btn');
 const exportModal = $('#export-modal');
 const modalPanel = $('#export-modal-panel');
@@ -632,6 +634,81 @@ copyBtn.addEventListener('click', async () => {
 });
 
 refreshBtn.addEventListener('click', () => void load());
+
+// ── Send to study ──
+// Uploads the exact reviewed payload straight to the submission site using the
+// Google account via chrome.identity (no separate sign-in step for the
+// participant). The site's /api/upload verifies the Google token and attributes
+// the upload by email.
+
+/** Submission site origin (injected at build time from wxt.config). */
+const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
+
+function setShareStatus(text: string, isError = false): void {
+  shareStatus.textContent = text;
+  shareStatus.classList.toggle('is-error', isError);
+}
+
+if (!submissionSite) {
+  shareBtn.disabled = true;
+  shareBtn.title = 'Submission site not configured';
+}
+
+shareBtn.addEventListener('click', async () => {
+  if (!submissionSite) return;
+
+  /** Upload once with a given token; returns true on success. */
+  const attempt = async (token: string): Promise<boolean> => {
+    const res = await fetch(`${submissionSite}/api/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ file: buildPreviewJson() }),
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || !data.ok) throw new Error(data.error ?? 'Upload failed.');
+    return true;
+  };
+
+  const send = async (): Promise<void> => {
+    shareBtn.disabled = true;
+    shareBtn.textContent = 'Uploading…';
+    setShareStatus('');
+    try {
+      const first = await browser.identity.getAuthToken({ interactive: true });
+      if (!first.token) throw new Error('Google sign-in returned no token.');
+      try {
+        await attempt(first.token);
+      } catch (err) {
+        // A cached token may predate the email scope. Drop it and re-request
+        // once so the participant gets a fresh consent, then retry.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/session|invalid|token/i.test(msg)) {
+          await browser.identity.removeCachedAuthToken({ token: first.token });
+          const fresh = await browser.identity.getAuthToken({ interactive: true });
+          if (!fresh.token) throw new Error('Google sign-in returned no token.');
+          await attempt(fresh.token);
+        } else {
+          throw err;
+        }
+      }
+      shareBtn.textContent = 'Uploaded ✓';
+      setShareStatus('Uploaded to the study.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      shareBtn.textContent = 'Retry';
+      setShareStatus(
+        /OAuth|identity|permission/i.test(msg)
+          ? `${msg} — check the extension\u2019s Google OAuth client setup.`
+          : msg,
+        true,
+      );
+    } finally {
+      shareBtn.disabled = false;
+    }
+  };
+
+  void send();
+});
 
 // ── Clear history ──
 // Participant-facing reset: deletes the interaction log only -- the condition

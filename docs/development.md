@@ -91,6 +91,10 @@ phish_ext/
 - Study-log viewer — participant-facing page (`/logs.html`, opened from the popup) showing the
   full interaction history with date/type/condition filters, a per-install participant ID, and a
   JSON export (`utils/log-export.ts`) for researchers. Nothing leaves the device except via that export.
+  A **Send to study** button uploads the current view straight to the submission site using the
+  participant's Google account via `chrome.identity` (needs the `identity` permission + the
+  `oauth2.client_id` in `wxt.config.ts`). The site origin is set in `wxt.config.ts`
+  (`DEV_SUBMISSION_SITE` / `PROD_SUBMISSION_SITE`); the button is disabled when it's empty.
 - Dataset tooling — `tools/generate.sh` captures brands at multiple viewports and writes `brands.json` (see `tools/README.md`).
 
 **Next:**
