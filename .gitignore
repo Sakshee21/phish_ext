@@ -17,6 +17,10 @@ stuff/
 .agents/
 .claude/
 
+# Build-time env for the extension (WXT_/VITE_ prefixed). Never commit.
+.env
+.env.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

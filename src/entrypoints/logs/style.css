@@ -250,6 +250,16 @@ body {
   color: var(--red-ink);
 }
 
+.share-status {
+  font: 500 12px/1.4 var(--mono);
+  color: var(--muted);
+  max-width: 260px;
+}
+
+.share-status.is-error {
+  color: var(--red-ink);
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;

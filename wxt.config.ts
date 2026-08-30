@@ -1,5 +1,14 @@
 import { defineConfig } from 'wxt';
 
+/**
+ * The Google OAuth client used by chrome.identity.getAuthToken for the
+ * "Send to study" upload. Create it in Google Cloud Console (Credentials ->
+ * Create OAuth client ID -> application type "Chrome Extension") and paste the
+ * client ID here. Use the extension's ID: for an unpacked dev build that's the
+ * ID shown in chrome://extensions; switch to the store ID for production.
+ */
+const GOOGLE_OAUTH_CLIENT_ID = '719116932154-2jahk0njff3h7fokf4bov757vgc6avat.apps.googleusercontent.com';
+
 export default defineConfig({
   srcDir: 'src',
   manifest: {
@@ -13,7 +22,11 @@ export default defineConfig({
     // covers localhost and 127.0.0.1 -- listing those separately only makes the
     // install-time permission prompt look longer than it is.
     host_permissions: ['<all_urls>'],
-    permissions: ['storage', 'tabs', 'offscreen', 'webNavigation'],
+    permissions: ['storage', 'tabs', 'offscreen', 'webNavigation', 'identity'],
+    oauth2: {
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      scopes: ['https://www.googleapis.com/auth/userinfo.email'],
+    },
     commands: {
       rescan: {
         suggested_key: { default: 'Ctrl+Shift+H' },
