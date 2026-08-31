@@ -6,6 +6,7 @@ import {
 } from '@/utils/condition-assignment';
 import type { InteractionEvent, InteractionEventType } from '@/utils/interaction-log';
 import { buildLogExport } from '@/utils/log-export';
+import { withGoogleToken } from '@/utils/google-auth';
 import { groupVisits, type Visit } from '@/utils/visits';
 import {
   WARNING_CONDITIONS,
@@ -681,23 +682,7 @@ shareBtn.addEventListener('click', async () => {
     shareBtn.textContent = 'Uploading…';
     setShareStatus('');
     try {
-      const first = await browser.identity.getAuthToken({ interactive: true });
-      if (!first.token) throw new Error('Google sign-in returned no token.');
-      try {
-        await attempt(first.token);
-      } catch (err) {
-        // A cached token may predate the email scope. Drop it and re-request
-        // once so the participant gets a fresh consent, then retry.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/session|invalid|token/i.test(msg)) {
-          await browser.identity.removeCachedAuthToken({ token: first.token });
-          const fresh = await browser.identity.getAuthToken({ interactive: true });
-          if (!fresh.token) throw new Error('Google sign-in returned no token.');
-          await attempt(fresh.token);
-        } else {
-          throw err;
-        }
-      }
+      await withGoogleToken(attempt);
       shareBtn.textContent = 'Uploaded ✓';
       setShareStatus('Uploaded to the study.');
     } catch (err) {
