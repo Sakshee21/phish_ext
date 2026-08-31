@@ -36,13 +36,22 @@ export default defineContentScript({
 
     /**
      * Most frequent content words on the page. Same algorithm as
-     * `DOM_EXTRACT_JS` in tools/generate.py (title + first 1500 chars of
-     * visible text, words of 3+ letters, stop words removed, top 12 by
+     * `DOM_EXTRACT_JS` in tools/generate.py (title + first 3000 chars of
+     * visible text, words of 3+ letters, stop words removed, top 30 by
      * frequency) so these are directly comparable to `BrandReference.keywords`.
+     *
+     * The cap deliberately exceeds the reference lists' 12 entries: matching
+     * is a set-membership test against `BrandReference.keywords` in the
+     * background, so a larger page-side pool only raises recall -- a clone
+     * whose boilerplate pushes a brand word out of its top slots still gets
+     * matched.
      */
+    const KEYWORD_WINDOW_CHARS = 3000;
+    const KEYWORD_POOL_SIZE = 30;
+
     function extractKeywords(): string[] {
       const title = (document.title || '').toLowerCase();
-      const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 1500);
+      const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, KEYWORD_WINDOW_CHARS);
       const freq = new Map<string, number>();
       for (const word of `${body} ${title}`.match(/[a-z]{3,}/g) ?? []) {
         if (STOP_WORDS.has(word)) continue;
@@ -50,7 +59,7 @@ export default defineContentScript({
       }
       return [...freq.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 12)
+        .slice(0, KEYWORD_POOL_SIZE)
         .map(([word]) => word);
     }
 

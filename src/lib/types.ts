@@ -92,8 +92,12 @@ export interface DetectionSignals {
   phash?: string;
   /** Hamming distance to the nearest brand reference (out of 64 bits). */
   visualDistance?: number;
-  /** How the brand was identified from page text (Layer 3). */
-  nameMatch?: 'exact' | 'lookalike';
+  /**
+   * How the brand was identified from page text (Layer 3). 'context' means
+   * the brand is never named in the page text: the match rests on distinctive
+   * wording plus colour/typeface corroboration.
+   */
+  nameMatch?: 'exact' | 'lookalike' | 'context';
   /** Brand keywords found in the page text. */
   matchedKeywords?: string[];
   /** For a lookalike name: which brand token and which page word. */

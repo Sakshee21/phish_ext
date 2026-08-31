@@ -225,13 +225,13 @@ DOM_EXTRACT_JS = r"""
     'if','have','has','had','been','will','can','may','www','http','https','com',
   ]);
   const title = (document.title || '').toLowerCase();
-  const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 1500);
+  const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 3000);
   const freq = {};
   for (const w of (body + ' ' + title).match(/[a-z]{3,}/g) || []) {
     if (stopWords.has(w)) continue;
     freq[w] = (freq[w] || 0) + 1;
   }
-  const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([w]) => w);
+  const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([w]) => w);
 
   return { colors, keywords, title: document.title, hostname: window.location.hostname,
            fontFamily: getComputedStyle(document.body).fontFamily };

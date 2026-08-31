@@ -479,7 +479,9 @@ function renderDetail(e: InteractionEvent): HTMLElement {
     const nameValue = signals.nameMatch
       ? signals.nameMatch === 'exact'
         ? 'exact match'
-        : `lookalike "${signals.lookalike?.pageWord}" ≈ "${signals.lookalike?.brandToken}"`
+        : signals.nameMatch === 'context'
+          ? 'context (brand unnamed in text)'
+          : `lookalike "${signals.lookalike?.pageWord}" ≈ "${signals.lookalike?.brandToken}"`
       : '';
     text.append(line('name match', nameValue));
     text.append(line(

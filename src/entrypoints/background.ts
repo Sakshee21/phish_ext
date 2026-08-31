@@ -110,6 +110,14 @@ export default defineBackground(() => {
    */
   const CAPTURE_SETTLE_MS = 1200;
 
+  /**
+   * Extra wait before re-extracting DOM features when the first pull found no
+   * login form. Clone kits frequently mount their form (and brand text) via
+   * JavaScript after navigation completes; this grace period lets that render
+   * land before the text layer gives up on the page.
+   */
+  const LATE_FORM_GRACE_MS = 2500;
+
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // ── Layer 3 (text): DOM features pulled from the content script ──
@@ -167,8 +175,12 @@ export default defineBackground(() => {
   interface TextMatch {
     brand: BrandReference;
     matchedKeywords: string[];
-    /** 'exact' - the brand's own name appears; 'lookalike' - a near-copy does. */
-    nameMatch: 'exact' | 'lookalike';
+    /**
+     * 'exact' - the brand's own name appears; 'lookalike' - a near-copy does;
+     * 'context' - the brand is never named, but its distinctive wording is
+     * reused and corroborated by its colour palette and typeface.
+     */
+    nameMatch: 'exact' | 'lookalike' | 'context';
     /** For a lookalike, which brand token and which page word. */
     lookalike?: { brandToken: string; pageWord: string };
   }
@@ -288,6 +300,70 @@ export default defineBackground(() => {
     return exact ?? lookalike;
   }
 
+  /**
+   * Distinctive keyword hits a context match must reach on its own: the brand
+   * is never named (its logo is an image, say), so the wording evidence has to
+   * stand without a name to point at.
+   */
+  const CONTEXT_DISTINCTIVE_MIN = 3;
+  /**
+   * Distinctive hits needed when the weaker route runs: there the keyword
+   * evidence is thinner, so the page must also wear the brand's colours and
+   * typeface before it counts.
+   */
+  const CONTEXT_DISTINCTIVE_WITH_STYLING_MIN = 2;
+  /** Keyword matches (any, not just distinctive) for the styling-backed route. */
+  const CONTEXT_KEYWORDS_WITH_STYLING_MIN = 6;
+
+  /**
+   * Identify a brand from wording + styling when the page never names it.
+   *
+   * A convincing clone often draws the brand name only inside its logo image,
+   * so `identifyBrandByText` finds nothing to match. This fallback instead
+   * asks whether the page reuses the brand's distinctive wording in volume,
+   * and, on the weaker route, backs that up with its colour palette and
+   * typeface. Distinctive keywords carry the weight because generic login
+   * vocabulary is shared by every brand in the dataset.
+   */
+  function identifyBrandByContext(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
+    if (!features.hasLoginForm) return null;
+
+    const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
+    const pageWords = new Set<string>([
+      ...features.pageKeywords.map((k) => k.toLowerCase()),
+      ...titleWords,
+    ]);
+
+    let best: { match: TextMatch; score: number } | null = null;
+    for (const brand of brands) {
+      const matchedKeywords = brand.keywords.filter((k) => pageWords.has(k.toLowerCase()));
+      if (matchedKeywords.length === 0) continue;
+      const distinctive = distinctiveKeywords(brand, brands);
+      const distinctiveHits = matchedKeywords.filter((k) => distinctive.has(k.toLowerCase()));
+
+      const colorsMatch = matchingColors(features.dominantColors, brand.colors).length > 0;
+      const fontMatch =
+        !!features.fontFamily?.trim() &&
+        !!brand.fontFamily?.trim() &&
+        features.fontFamily.trim().toLowerCase() === brand.fontFamily.trim().toLowerCase();
+
+      const strongEnough =
+        distinctiveHits.length >= CONTEXT_DISTINCTIVE_MIN ||
+        (distinctiveHits.length >= CONTEXT_DISTINCTIVE_WITH_STYLING_MIN &&
+          matchedKeywords.length >= CONTEXT_KEYWORDS_WITH_STYLING_MIN &&
+          colorsMatch &&
+          fontMatch);
+      if (!strongEnough) continue;
+
+      // Distinctive words are worth much more than shared login vocabulary.
+      const score = distinctiveHits.length * 2 + matchedKeywords.length;
+      if (!best || score > best.score) {
+        best = { match: { brand, matchedKeywords, nameMatch: 'context' }, score };
+      }
+    }
+    return best?.match ?? null;
+  }
+
   /** Parse "#rrggbb" into RGB, or null if it isn't a hex colour. */
   function hexToRgb(hex: string): [number, number, number] | null {
     const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -359,8 +435,21 @@ export default defineBackground(() => {
     // independently of Layer 1 -- a viewport mismatch or a failed screenshot
     // must not blind the whole pipeline, which is what happens if the visual
     // match is treated as a gate.
-    const features = await fetchDOMFeatures(tabId);
-    const textual = features ? identifyBrandByText(features, brands) : null;
+    let features: DOMFeatures | null = await fetchDOMFeatures(tabId);
+    // Second chance for late-rendered login forms: kit-built clone pages often
+    // mount their password field (and their brand text) via JavaScript after
+    // the initial extraction. If the first look found no form, give the page
+    // one grace period and re-extract before concluding anything. One retry
+    // only, so ordinary pages without a form don't pay the delay twice.
+    if (features && !features.hasLoginForm) {
+      await delay(LATE_FORM_GRACE_MS);
+      features = (await fetchDOMFeatures(tabId)) ?? features;
+    }
+    // The name-based match is preferred; the context fallback only runs when
+    // the page never names the brand in its text.
+    const textual = features
+      ? (identifyBrandByText(features, brands) ?? identifyBrandByContext(features, brands))
+      : null;
 
     const matchedBrand = visual?.brand ?? textual?.brand ?? null;
 
@@ -521,7 +610,9 @@ export default defineBackground(() => {
     if (domain.isSuspicious) {
       if (visual && textual) riskScore = 0.9;
       else if (visual) riskScore = 0.85;
-      else if (textual?.nameMatch === 'lookalike') riskScore = 0.6;
+      // Lookalike and context matches are the weaker text routes: a name one
+      // edit away, or no name at all with only wording + styling to go on.
+      else if (textual?.nameMatch === 'lookalike' || textual?.nameMatch === 'context') riskScore = 0.6;
       else riskScore = 0.7;
     }
 
