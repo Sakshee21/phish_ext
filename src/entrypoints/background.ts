@@ -326,7 +326,12 @@ export default defineBackground(() => {
    * vocabulary is shared by every brand in the dataset.
    */
   function identifyBrandByContext(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
-    if (!features.hasLoginForm) return null;
+    // Same credential gate as the name-based path: the wording evidence must
+    // describe a page that could *take* something from the visitor. Unlike
+    // that path, a hotlinked brand asset is not enough here -- an unnamed
+    // match rests on wording alone, and an article or fan page that embeds
+    // the brand's own images could clear it.
+    if (!(features.hasCredentialField ?? features.hasLoginForm)) return null;
 
     const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
     const pageWords = new Set<string>([
