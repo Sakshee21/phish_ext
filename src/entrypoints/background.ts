@@ -1,9 +1,10 @@
-import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement } from '@/lib/types';
+import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement, ReportResultMessage, TabStatusMessage, TabVerdict } from '@/lib/types';
 import { loadBrands } from '@/utils/brands';
 import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
 import { ensureAssigned } from '@/utils/condition-assignment';
-import { logInteraction } from '@/utils/interaction-log';
+import { logInteraction, sanitizeResult } from '@/utils/interaction-log';
+import { withGoogleToken } from '@/utils/google-auth';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
@@ -680,14 +681,143 @@ export default defineBackground(() => {
         : undefined,
     };
 
-    // Hand the verdict to the content script -> warning UI.
+    // Hand the verdict to the content script -> warning UI, and remember it
+    // for this tab so the popup can offer a false-positive report while the
+    // flagged page is still on screen.
+    const visitId = generateVisitId();
+    let hostname = url;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      // Keep the raw url as hostname for non-parseable inputs.
+    }
+    await storeTabVerdict(tabId, {
+      visitId,
+      url,
+      hostname,
+      matchedBrand: matchedBrand.id,
+      riskScore,
+      isSuspicious: domain.isSuspicious,
+      condition: await ensureAssigned().catch(() => null),
+      reported: false,
+      ts: Date.now(),
+      result: sanitizeResult(result),
+    });
     browser.tabs
-      .sendMessage(tabId, { type: 'DETECTED', result } satisfies ExtensionMessage)
+      .sendMessage(tabId, { type: 'DETECTED', result, visitId } satisfies ExtensionMessage)
       .catch(() => {
         // No receiver (e.g. tabs where the content script isn't present) - ignore.
       });
 
     return result;
+  }
+
+  // ── False-positive reporting: per-tab verdict store + submission ──
+
+  /**
+   * Per-visit id for the verdict the pipeline just computed.
+   *
+   * Minted here rather than in the content script so the popup's report can
+   * reference the same visit the warning events were logged under. Same
+   * fallback shape as the content script's own generator for non-secure
+   * contexts without crypto.randomUUID.
+   */
+  function generateVisitId(): string {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+  }
+
+  /** storage.session survives MV3 service-worker restarts without persisting
+   *  past the browsing session -- right lifetime for "the page currently on
+   *  screen". Falls back to storage.local on engines without it. */
+  const verdictArea: typeof browser.storage.local =
+    (browser.storage as { session?: typeof browser.storage.local }).session ?? browser.storage.local;
+
+  const verdictKey = (tabId: number): string => `tabVerdict:${tabId}`;
+
+  async function storeTabVerdict(tabId: number, entry: TabVerdict): Promise<void> {
+    await verdictArea.set({ [verdictKey(tabId)]: entry });
+  }
+
+  async function readTabVerdict(tabId: number): Promise<TabVerdict | null> {
+    const stored = await verdictArea.get(verdictKey(tabId));
+    return (stored[verdictKey(tabId)] as TabVerdict | undefined) ?? null;
+  }
+
+  /** The submission site origin injected at build time (wxt.config.ts). */
+  const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
+
+  /**
+   * Send a false-positive report to the submission site, which verifies the
+   * Google token and stores it with status "pending" for researcher review.
+   * Throws on any failure so the caller can surface it to the popup.
+   */
+  async function submitReport(entry: TabVerdict): Promise<void> {
+    if (!submissionSite) throw new Error('Reporting is not configured.');
+    await withGoogleToken(async (token) => {
+      const res = await fetch(`${submissionSite}/api/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          url: entry.url,
+          hostname: entry.hostname,
+          matchedBrand: entry.matchedBrand,
+          riskScore: entry.riskScore,
+          signals: entry.result.signals,
+          flaggedElements: entry.result.flaggedElements,
+          condition: entry.condition,
+          visitId: entry.visitId,
+          extensionVersion: browser.runtime.getManifest().version,
+          reportedTs: Date.now(),
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Report failed.');
+    });
+  }
+
+  async function handleReportFalsePositive(tabId: number): Promise<ReportResultMessage> {
+    const entry = await readTabVerdict(tabId);
+    if (!entry) {
+      return { type: 'REPORT_RESULT', ok: false, error: 'No flagged page found for this tab.' };
+    }
+    if (entry.reported) {
+      return { type: 'REPORT_RESULT', ok: false, alreadyReported: true, error: 'Already reported.' };
+    }
+
+    // The report is a research event in its own right, and joins the visit's
+    // other events through visitId. Logged before the network call so a
+    // failed upload still leaves the signal in the participant's log.
+    if (entry.result) {
+      const fullResult: DetectionResult = {
+        riskScore: entry.riskScore,
+        matchedBrand: entry.matchedBrand,
+        flaggedElements: (entry.result.flaggedElements ?? []).map((f) => ({ ...f })),
+        reasoning: entry.result.reasoning ?? '',
+        signals: entry.result.signals,
+        comparison: undefined,
+      };
+      await logInteraction('reported', fullResult, entry.url, {
+        condition: entry.condition,
+        visitId: entry.visitId,
+      });
+    }
+
+    try {
+      await submitReport(entry);
+    } catch (err) {
+      return {
+        type: 'REPORT_RESULT',
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    await storeTabVerdict(tabId, { ...entry, reported: true });
+    return { type: 'REPORT_RESULT', ok: true };
   }
 
   // ── Listen for completed page navigation ──
@@ -771,6 +901,15 @@ export default defineBackground(() => {
       // Popup condition change → re-run the pipeline so the new warning
       // condition takes effect on the current tab without navigating away.
       void rescanActiveTab();
+    } else if (message.type === 'GET_TAB_STATUS') {
+      // The popup asking whether this tab's current page was flagged, so it
+      // can offer a false-positive report. Returning the promise resolves
+      // the popup's sendMessage.
+      return readTabVerdict(message.tabId).then(
+        (entry): TabStatusMessage => ({ type: 'TAB_STATUS', entry }),
+      );
+    } else if (message.type === 'REPORT_FALSE_POSITIVE') {
+      return handleReportFalsePositive(message.tabId);
     }
   });
 });

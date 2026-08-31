@@ -34,6 +34,10 @@ const TYPE_META: Record<InteractionEventType, { label: string; color: string }> 
   // The worst outcome the study can record: credentials actually handed over
   // on a flagged page. Red, alongside 'proceeded'.
   submitted: { label: 'Submitted credentials', color: 'var(--red)' },
+  // The participant's own verdict that the warning was wrong. Not a decision
+  // about the page (that stays dismiss/proceed/go-back) -- it is feedback
+  // about the detection, and lands in the researcher's review queue.
+  reported: { label: 'Reported false positive', color: 'var(--violet)' },
   dismissed: { label: 'Dismissed', color: 'var(--slate)' },
   proceeded: { label: 'Proceeded anyway', color: 'var(--red)' },
   'went-back': { label: 'Went back', color: 'var(--ok)' },
@@ -46,6 +50,7 @@ const TYPE_ORDER: InteractionEventType[] = [
   'focused',
   'typed',
   'submitted',
+  'reported',
   'dismissed',
   'proceeded',
   'went-back',

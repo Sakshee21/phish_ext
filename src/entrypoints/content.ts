@@ -419,10 +419,10 @@ export default defineContentScript({
       activeEngagement = null;
     }
 
-    function renderWarning(result: DetectedMessage['result']): void {
+    function renderWarning(result: DetectedMessage['result'], visitId?: string): void {
       console.log('[phish_ext] Warning triggered:', result);
       if (result.riskScore > 0.5) {
-        void showWarning(result);
+        void showWarning(result, visitId);
       }
     }
 
@@ -446,7 +446,7 @@ export default defineContentScript({
       };
     }
 
-    async function showWarning(result: DetectedMessage['result']): Promise<void> {
+    async function showWarning(result: DetectedMessage['result'], backgroundVisitId?: string): Promise<void> {
       const condition = await resolveCondition();
       if (!condition) {
         // resolveCondition already logged why. Rendering anyway would produce
@@ -457,7 +457,10 @@ export default defineContentScript({
       console.log('[phish_ext] Rendering warning (condition:', condition + ')');
 
       teardownWarning();
-      const visitId = generateVisitId();
+      // The visit id is minted by the background when it computed the verdict,
+      // so the popup's false-positive report references the same visit. The
+      // local generator covers messages predating that field.
+      const visitId = backgroundVisitId ?? generateVisitId();
       currentWarning = { result, condition, visitId };
 
       // Engagement tracking runs for every condition, identically. Whether the
@@ -654,7 +657,7 @@ export default defineContentScript({
 
     browser.runtime.onMessage.addListener((message: ExtensionMessage) => {
       if (message.type === 'DETECTED') {
-        renderWarning(message.result);
+        renderWarning(message.result, message.visitId);
       }
       // Background pulls DOM features when it runs the pipeline, rather than
       // relying on the PAGE_READY push (which can race the navigation event).

@@ -39,7 +39,14 @@ export type InteractionEventType =
    * study is about. Distinct from 'typed': someone can type and think better
    * of it, and only submission actually hands the credentials over.
    */
-  | 'submitted';
+  | 'submitted'
+  /**
+   * The participant reported this warning as a false positive (popup button).
+   * A reaction worth studying in its own right -- and the raw material for
+   * reviewing the dataset, since approved hostnames are folded into the next
+   * brands.json rebuild.
+   */
+  | 'reported';
 
 /**
  * A sanitized snapshot of the verdict, so a researcher can see *why* each
@@ -94,8 +101,12 @@ const MAX_EVENTS = 500;
  */
 let writeChain: Promise<void> = Promise.resolve();
 
-/** Build the persisted snapshot, dropping the bulky/private bits. */
-function sanitizeResult(result: DetectionResult): LoggedResult {
+/**
+ * Build the persisted snapshot, dropping the bulky/private bits. Also the
+ * payload shape for false-positive reports, which describe the same verdict
+ * without the thumbnail or CSS selectors.
+ */
+export function sanitizeResult(result: DetectionResult): LoggedResult {
   const logged: LoggedResult = { reasoning: result.reasoning, signals: result.signals };
 
   if (result.flaggedElements.length > 0) {
