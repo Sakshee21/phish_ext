@@ -24,9 +24,9 @@ function base64ToBlob(base64: string, mimeType = 'image/png'): Blob {
  * decode the screenshot bytes into pixels.
  *
  * Comparison: two hashes are "close" if Hamming distance <= threshold.
- * Typical thresholds: < 5 for a 64-bit pHash.
+ * The shipped threshold lives in brands.json (`phashThreshold`, currently 7).
  */
-async function computePHash(imageData: string): Promise<string> {
+async function computePHash(imageData: string, devicePixelRatio?: number): Promise<string> {
   const blob = base64ToBlob(imageData);
   const bitmap = await createImageBitmap(blob);
 
@@ -40,7 +40,7 @@ async function computePHash(imageData: string): Promise<string> {
   ctx.drawImage(bitmap, 0, 0);
   const pixels = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
 
-  return computePerceptualHash(pixels);
+  return computePerceptualHash(pixels, devicePixelRatio);
 }
 
 // ── Logo template matching (Layer 3) ──
@@ -65,7 +65,7 @@ browser.runtime.onMessage.addListener(
   async (message: ExtensionMessage): Promise<ExtensionMessage | undefined> => {
     switch (message.type) {
       case 'COMPUTE_PHASH': {
-        const hash = await computePHash(message.imageData);
+        const hash = await computePHash(message.imageData, message.devicePixelRatio);
         return { type: 'PHASH_RESULT', hash };
       }
 

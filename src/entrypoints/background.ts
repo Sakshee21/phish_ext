@@ -48,7 +48,7 @@ export default defineBackground(() => {
    * Returns null — never throws — on any failure so the pipeline can degrade
    * to a safe no-match. Offscreen is Chromium-only; Firefox skips Layer 1.
    */
-  async function captureAndHash(tabId: number): Promise<string | null> {
+  async function captureAndHash(tabId: number, devicePixelRatio?: number): Promise<string | null> {
     try {
       if (!browser.offscreen) {
         console.warn('[phish_ext] offscreen API unavailable — skipping Layer 1');
@@ -77,7 +77,11 @@ export default defineBackground(() => {
       const imageData = await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
 
       // The offscreen worker answers COMPUTE_PHASH with PHASH_RESULT directly.
-      const message = { type: 'COMPUTE_PHASH', imageData } satisfies ExtensionMessage;
+      const message = {
+        type: 'COMPUTE_PHASH',
+        imageData,
+        ...(devicePixelRatio != null ? { devicePixelRatio } : {}),
+      } satisfies ExtensionMessage;
       let response: unknown;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -430,23 +434,34 @@ export default defineBackground(() => {
   async function runPipeline(tabId: number, url: string): Promise<DetectionResult> {
     const brands = await loadBrands();
 
+    // The first feature pull comes before the capture: the hash band is
+    // measured in CSS pixels, so Layer 1 needs the page's devicePixelRatio
+    // (reported by the content script) to convert the screenshot correctly.
+    // This pull is deliberately without the late-form grace period -- the
+    // screenshot should happen promptly after the settle wait; the retry
+    // runs further down, after the capture.
+    let features: DOMFeatures | null = await fetchDOMFeatures(tabId);
+
     // Layer 1 (visual): screenshot -> pHash -> nearest brand within threshold.
     // Viewport-dependent: only matches when the window is close in size to one
     // of the captured references.
-    const hash = await captureAndHash(tabId);
+    const hash = await captureAndHash(tabId, features?.devicePixelRatio);
     const visual = hash ? findVisualBrandMatch(hash, brands) : null;
 
     // Layer 3 (text): identify the brand from page text. Deliberately runs
     // independently of Layer 1 -- a viewport mismatch or a failed screenshot
     // must not blind the whole pipeline, which is what happens if the visual
     // match is treated as a gate.
-    let features: DOMFeatures | null = await fetchDOMFeatures(tabId);
-    // Second chance for late-rendered login forms: kit-built clone pages often
-    // mount their password field (and their brand text) via JavaScript after
-    // the initial extraction. If the first look found no form, give the page
-    // one grace period and re-extract before concluding anything. One retry
-    // only, so ordinary pages without a form don't pay the delay twice.
-    if (features && !features.hasLoginForm) {
+    // Second chance for late-rendered credential forms: kit-built clone pages
+    // often mount their fields (and their brand text) via JavaScript after the
+    // initial extraction. If the first look found no credential field, give
+    // the page one grace period and re-extract before concluding anything. One
+    // retry only, so ordinary pages without a form don't pay the delay twice.
+    // Email-first logins (hasCredentialField) count, so they skip the wait.
+    const collectsCredentials = features
+      ? (features.hasCredentialField ?? features.hasLoginForm)
+      : false;
+    if (features && !collectsCredentials) {
       await delay(LATE_FORM_GRACE_MS);
       features = (await fetchDOMFeatures(tabId)) ?? features;
     }

@@ -152,6 +152,13 @@ export interface DOMFeatures {
   pageKeywords: string[];
   /** Page <title> */
   title: string;
+  /**
+   * window.devicePixelRatio of the page. Layer 1 needs it to convert the
+   * captureVisibleTab screenshot (device pixels) into CSS pixels for the
+   * fixed CSS-px hash band. Chromium folds page zoom into this value, which
+   * matches what the capture actually contains.
+   */
+  devicePixelRatio?: number;
   /** Computed font-family of the page body, for comparison with the brand's. */
   fontFamily?: string;
   /** Elements a warning can highlight (logo, login form, password field). */
@@ -165,6 +172,12 @@ export interface ComputePHashMessage {
   type: 'COMPUTE_PHASH';
   /** Base64-encoded PNG screenshot data */
   imageData: string;
+  /**
+   * Ratio the screenshot was captured at (`window.devicePixelRatio`, which in
+   * Chromium also folds in browser zoom). The hash band is measured in CSS
+   * pixels, so this converts it to image pixels. Absent/invalid → treated as 1.
+   */
+  devicePixelRatio?: number;
 }
 
 export interface PHashResultMessage {

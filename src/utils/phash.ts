@@ -13,18 +13,27 @@
  *
  * ## Algorithm
  *
- * 1. Crop to a fixed top band (height = `CROP_ASPECT` x image width).
+ * 1. Crop to a fixed top band, **700 CSS pixels** tall (`BAND_CSS_PX`).
  *    A screenshot only contains what happened to be *visible*, so a tall
  *    window shows more of the page than a short one and the two images differ
- *    enormously even though it is the same page. Tying the band's height to
- *    the image's own width makes the hash independent of window height --
- *    measured: two captures of one page at 1920 wide but 1080 vs 955 tall go
- *    from 26 bits apart to 0. It also cancels display scaling, since the band
- *    scales with the image.
+ *    enormously even though it is the same page. Hashing a fixed-height band
+ *    makes the result independent of window height — and, unlike a band tied
+ *    to the image's width, independent of window width too: the band always
+ *    covers the same vertical extent of the page, measured in CSS pixels.
+ *    Leave-one-out over the reference captures (scripts/loo-thresholds.ts):
+ *    width-proportional cropping self-matched 8/24, the fixed band 15/24 at
+ *    the shipped threshold — and a wider 6-viewport experiment measured the
+ *    gap at nearly 4x — with no new false matches in either.
  *
- *    Window *width* is not normalised away, and cannot be: at different widths
- *    the page genuinely reflows (columns rewrap, elements resize). Width
- *    buckets in the reference dataset cover that; see tools/config.json.
+ *    The height is normalized by the device pixel ratio before cropping, so a
+ *    2x (Retina / zoomed) screenshot hashes the same page region as a 1x one.
+ *    If the window is shorter than the band, the band clamps to the visible
+ *    height — the same rule runs on the reference captures (taken at
+ *    device_scale_factor 1 via tools/generate.py), so both sides agree.
+ *
+ *    Window *width* is still not normalised away, and cannot be: at different
+ *    widths the page genuinely reflows (columns rewrap, elements resize).
+ *    Width buckets in the reference dataset cover that; see tools/config.json.
  * 2. Convert to grayscale (ITU-R BT.601 luma weights).
  * 3. Resize down to 32x32 via box-filter (area-average) downsampling.
  *    - Grayscale is applied before resizing rather than after — mathematically
@@ -63,14 +72,16 @@ export interface PixelBuffer {
 // ── Tunables ──
 
 /**
- * Height of the hashed band, as a fraction of the image's width.
+ * Height of the hashed band, in CSS pixels.
  *
- * 0.45 was chosen empirically: small enough to still fit inside a maximised
- * 16:9 window (1920x1080 needs 864 <= 1080), which matters because the band
- * has to be fully present in *both* the reference capture and the live one
- * for their hashes to agree.
+ * Login pages center a fixed-width card that occupies the same pixels at any
+ * window size, so a fixed-height band always captures identical content for
+ * them. 700 was chosen empirically (leave-one-out over the reference
+ * captures): it fits inside every reference viewport's *visible* height
+ * (1280x800 → ~640 px after browser chrome, hence the clamp below) while
+ * covering the header + credential form of every reference page.
  */
-export const CROP_ASPECT = 0.45;
+export const BAND_CSS_PX = 700;
 
 /** Side length the image is downsampled to before the DCT. */
 export const RESIZE_SIZE = 32;
@@ -218,14 +229,24 @@ function bitsToHex(bits: boolean[]): string {
 // ── Public API ──
 
 /**
- * Compute a DCT-based perceptual hash from raw pixel data at any source
- * size. Returns a lowercase hex string, `HASH_BITS / 4` characters long
+ * Compute a DCT-based perceptual hash from raw pixel data at any source size.
+ *
+ * `devicePixelRatio` is the ratio the screenshot was captured at (1 for the
+ * reference captures, `window.devicePixelRatio` for live captures — which
+ * also includes browser zoom in Chromium). The band is measured in CSS
+ * pixels and converted to image pixels with this ratio, so captures at any
+ * scale hash the same page region. Defaults to 1, which is correct for the
+ * dsf-1 reference captures and for any unknown-DPR source.
+ *
+ * Returns a lowercase hex string, `HASH_BITS / 4` characters long
  * (16 chars for the default 64-bit hash).
  */
-export function computePerceptualHash(pixels: PixelBuffer): string {
+export function computePerceptualHash(pixels: PixelBuffer, devicePixelRatio = 1): string {
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
   // Only the top band is hashed, so window height doesn't change the result.
-  // Rows below it are never even converted to grayscale.
-  const bandHeight = Math.max(1, Math.min(pixels.height, Math.round(pixels.width * CROP_ASPECT)));
+  // The band is clamped to the visible height (a short window contributes all
+  // of itself) and converted from CSS px to image px via the DPR.
+  const bandHeight = Math.max(1, Math.min(pixels.height, Math.round(BAND_CSS_PX * dpr)));
   const gray = toGrayscale(pixels, bandHeight);
   const resized = resizeGrayscale(gray, pixels.width, bandHeight, RESIZE_SIZE);
   const dct = dct2D(resized);

@@ -315,6 +315,7 @@ export default defineContentScript({
         dominantColors: extractColors(),
         pageKeywords: keywords,
         title: document.title,
+        devicePixelRatio: window.devicePixelRatio || 1,
         fontFamily: getComputedStyle(document.body).fontFamily,
         elements: locateElements(passwordFields[0] ?? null, keywords),
       };
