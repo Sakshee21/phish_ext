@@ -105,11 +105,19 @@ const EXTRA_CSS = `
   .phish-popover { animation: none !important; }
   .phish-outline-newest { animation: none !important; }
 }
+/* Driver builds the title as a <header> and the footer as a <footer> (the
+   description is a <div>). Those are semantic tags, so a host page's own
+   "header { height: 88px }" -- every site has one -- lands straight on our
+   title and leaves a tall empty band under one line of text. all:unset only
+   guards the popover wrapper, not these children, so their box has to be pinned
+   back to content-sized here. Height is the one that bit us; width/max-height
+   are the same class of bleed, closed pre-emptively. */
 .phish-popover .driver-popover-title,
 .phish-popover .driver-popover-description,
 .phish-popover .driver-popover-footer {
   background: none !important; background-color: transparent !important;
   border: 0 !important; box-shadow: none !important;
+  height: auto !important; max-height: none !important; width: auto !important;
   min-height: 0 !important; min-width: 0 !important;
   margin-left: 0 !important; margin-right: 0 !important; padding: 0 !important;
 }

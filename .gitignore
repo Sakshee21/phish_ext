@@ -50,3 +50,10 @@ tools/.venv/
 # and then read through the WSL bridge. Not real files.
 *:Zone.Identifier
 *Zone.Identifier
+
+# Local study clones (test-pages/*.html) — brand-impersonation markup fetched
+# from the collaborator's GitHub Pages, not something to commit. Keep the folder,
+# the hostname map, and the README; repopulate the HTML with scripts/fetch-clones.sh.
+test-pages/*.html
+!test-pages/clone-map.tsv
+!test-pages/README.md

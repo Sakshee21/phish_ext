@@ -1,5 +1,18 @@
 # Testing Guide — phash.ts Validation
 
+> **Testing the warning conditions** (the five delivery formats) is in
+> `docs/testing-warning-layer.md`. **Serving the clones under realistic
+> hostnames** — so the URL doesn't give the page away and Layer 2 becomes
+> testable — is in `SETUP.md`.
+>
+> ⚠️ **The study clones and their hostnames are local-only.** Pages like
+> `paypa1.com` / `idfcfirst-secure.in` (see `SETUP.md`) impersonate real brands
+> for detection testing and resolve to `127.0.0.1` **only** on a machine that
+> ran `scripts/setup-hosts.ps1`. They are **not** registered, published, or
+> reachable from the internet, and are **not** live phishing pages. Don't treat
+> a fake hostname resolving on your own machine as evidence it exists anywhere
+> else — it doesn't.
+
 This doc covers how to validate Layer 1 (perceptual hashing). The implementation
 passes both a synthetic self-check and a real-screenshot validation; this guide
 is how to re-run it and stress-test the `<= 5` Hamming-distance threshold with

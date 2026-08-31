@@ -1,0 +1,13 @@
+# Canonical list of local study-clone hostnames.
+# Single source of truth: serve-clones.py routes on it, setup-hosts.ps1 mirrors
+# it into the Windows hosts file. Columns are tab-separated.
+#
+# These hostnames resolve to 127.0.0.1 ONLY on a machine that has run
+# setup-hosts.ps1. They are not registered, not published, and unreachable
+# from the internet. See SETUP.md.
+#
+# hostname<TAB>page<TAB>brand<TAB>expected_flagReason<TAB>note
+paypa1.com	paypal.html	paypal	typosquatting	homoglyph 1<->l, edit distance 0
+glthub.com	github.html	github	typosquatting	char substitution i->l, edit distance 1
+idfcfirst-secure.in	idhc.html	idfcfirstbank	domain_mismatch	plausible extra word, far from idfcfirst.bank.in
+shopify-billing.com	shopify.html	shopify	domain_mismatch	plausible extra word, far from shopify.com
