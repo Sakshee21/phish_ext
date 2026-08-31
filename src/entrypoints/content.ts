@@ -10,7 +10,7 @@ import {
 import { renderers, type Renderer } from '@/components/renderers';
 import { modalRenderer } from '@/components/renderers/modal';
 import { resolveCondition } from '@/utils/condition-assignment';
-import { createEngagementTracker, type EngagementTracker } from '@/utils/engagement-tracker';
+import { createEngagementTracker, CREDENTIAL_SELECTOR, type EngagementTracker } from '@/utils/engagement-tracker';
 import type { WarningCondition } from '@/lib/conditions';
 
 export default defineContentScript({
@@ -127,27 +127,55 @@ export default defineContentScript({
       );
     }
 
+    /** How far a colour sits from grey. */
+    function saturationOf(color: string): number | null {
+      const m = color.match(/rgba?\(([^)]+)\)/);
+      if (!m) return null;
+      const parts = m[1]!.split(',').map((v) => parseFloat(v.trim()));
+      if (parts.length === 4 && (parts[3] ?? 1) < 0.5) return null;
+      const [r, g, b] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      return max === 0 ? 0 : (max - min) / max;
+    }
+
     /**
-     * Dominant background colours, sampled from the same elements
-     * tools/generate.py samples so the results are comparable to
-     * `BrandReference.colors`.
+     * The page's most brand-identifying colours.
+     *
+     * Must stay identical to DOM_EXTRACT_JS in tools/generate.py -- the two
+     * lists are compared directly, so drift between them silently breaks the
+     * colour signal.
+     *
+     * Backgrounds alone are not enough: login pages are overwhelmingly white
+     * or near-black, so nearly every brand ended up with #ffffff, which
+     * matches anything and therefore evidences nothing. Buttons and links
+     * carry the accent colour that actually identifies a brand, and ranking
+     * by saturation puts it ahead of the page background.
      */
     function extractColors(): string[] {
-      const sources = [
-        document.body,
-        document.querySelector('header'),
-        document.querySelector('nav'),
-        document.querySelector('main'),
-        document.querySelector('[class*="logo"],[id*="logo"],[class*="brand"],[id*="brand"]'),
-      ];
-      const colors: string[] = [];
-      for (const el of sources) {
-        if (!el) continue;
-        const hex = rgbToHex(getComputedStyle(el).backgroundColor);
-        if (hex && !colors.includes(hex)) colors.push(hex);
-        if (colors.length >= 5) break;
+      const seen = new Map<string, number>();
+      const consider = (color: string | null | undefined): void => {
+        if (!color) return;
+        const sat = saturationOf(color);
+        if (sat === null) return;
+        const hex = rgbToHex(color);
+        if (hex && !seen.has(hex)) seen.set(hex, sat);
+      };
+
+      for (const sel of ['body', 'header', 'nav', 'main', '[class*="logo"],[id*="logo"],[class*="brand"],[id*="brand"]']) {
+        const el = document.querySelector<HTMLElement>(sel);
+        if (el) consider(getComputedStyle(el).backgroundColor);
       }
-      return colors;
+      const accents = document.querySelectorAll<HTMLElement>(
+        'button, [type="submit"], a.button, .btn, [class*="button"], [class*="cta"], a',
+      );
+      for (const el of Array.from(accents).slice(0, 60)) {
+        const cs = getComputedStyle(el);
+        consider(cs.backgroundColor);
+        consider(cs.color);
+      }
+
+      return [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([hex]) => hex);
     }
 
     /**
@@ -249,9 +277,14 @@ export default defineContentScript({
         });
       }
 
-      if (passwordField && isVisible(passwordField)) {
-        located.push({ selector: buildSelector(passwordField), kind: 'password-field' });
-        const form = passwordField.closest<HTMLElement>('form');
+      // Whatever field actually takes the credentials -- the password box when
+      // there is one, otherwise the identifier field of a two-step login.
+      const credentialTarget = passwordField && isVisible(passwordField)
+        ? passwordField
+        : Array.from(document.querySelectorAll<HTMLElement>(CREDENTIAL_SELECTOR)).find(isVisible) ?? null;
+      if (credentialTarget) {
+        located.push({ selector: buildSelector(credentialTarget), kind: 'password-field' });
+        const form = credentialTarget.closest<HTMLElement>('form');
         if (form && isVisible(form)) located.push({ selector: buildSelector(form), kind: 'login-form' });
       }
 
@@ -261,12 +294,14 @@ export default defineContentScript({
 
     function extractDOMFeatures(): DOMFeatures {
       const passwordFields = document.querySelectorAll<HTMLElement>('input[type="password"]');
+      const credentialFields = document.querySelectorAll<HTMLElement>(CREDENTIAL_SELECTOR);
       const logo = findLogo();
       const keywords = extractKeywords();
       return {
         url: window.location.href,
         hasLoginForm: passwordFields.length > 0,
         passwordFieldCount: passwordFields.length,
+        hasCredentialField: credentialFields.length > 0,
         logoCandidates: logo?.getAttribute('src') ? [logo.getAttribute('src')!] : [],
         dominantColors: extractColors(),
         pageKeywords: keywords,

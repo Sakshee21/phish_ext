@@ -20,6 +20,26 @@ const APPROACH_PX = 120;
 /** mousemove sampling interval (ms). */
 const MOVE_THROTTLE_MS = 150;
 
+/**
+ * What counts as a credential field.
+ *
+ * Not just `input[type=password]`. Real logins are routinely two-step --
+ * Shopify, Google and Microsoft all ask for the identifier first and the
+ * password on a second screen -- so their clones do too. A page that collects
+ * an email under a brand's name is harvesting credentials even though no
+ * password box exists yet, and requiring one misses that whole class.
+ */
+export const CREDENTIAL_SELECTOR = [
+  'input[type="password"]',
+  'input[type="email"]',
+  'input[autocomplete="username"]',
+  'input[autocomplete="email"]',
+  'input[name*="email" i]',
+  'input[name*="user" i]',
+  'input[id*="email" i]',
+  'input[id*="user" i]',
+].join(',');
+
 export type EngagementSignal = 'approached' | 'focused' | 'typed' | 'submitted';
 
 export interface EngagementTracker {
@@ -35,10 +55,12 @@ export interface EngagementTracker {
  * visible field there is no approach to detect, and the signal stays off until
  * the participant opens the form.
  */
-function credentialField(): HTMLElement | null {
+export function credentialField(): HTMLElement | null {
+  // Password first when there is one -- it is the strongest signal -- then any
+  // other credential-identifier field.
   const candidates = [
     ...Array.from(document.querySelectorAll<HTMLElement>('input[type="password"]')),
-    ...Array.from(document.querySelectorAll<HTMLElement>('input:not([type="hidden"])')),
+    ...Array.from(document.querySelectorAll<HTMLElement>(CREDENTIAL_SELECTOR)),
   ];
   for (const el of candidates) {
     const rect = el.getBoundingClientRect();
@@ -78,14 +100,14 @@ export function createEngagementTracker(
   function onFocusIn(event: FocusEvent): void {
     typedThisFocus = false;
     const target = event.target;
-    if (target instanceof HTMLElement && target.matches('input[type="password"]')) {
+    if (target instanceof HTMLElement && target.matches(CREDENTIAL_SELECTOR)) {
       onSignal('focused');
     }
   }
 
   function onKeyDown(): void {
     const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || !active.matches('input[type="password"]')) return;
+    if (!(active instanceof HTMLElement) || !active.matches(CREDENTIAL_SELECTOR)) return;
     // The first keystroke of a focus session, not every key.
     if (typedThisFocus) return;
     typedThisFocus = true;
@@ -102,7 +124,7 @@ export function createEngagementTracker(
    */
   function onSubmit(event: Event): void {
     const form = event.target;
-    if (form instanceof HTMLElement && form.querySelector('input[type="password"]')) {
+    if (form instanceof HTMLElement && form.querySelector(CREDENTIAL_SELECTOR)) {
       onSignal('submitted');
     }
   }

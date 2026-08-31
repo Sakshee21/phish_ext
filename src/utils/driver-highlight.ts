@@ -17,11 +17,16 @@ import type { WarningActions } from '@/components/renderers/types';
  * exactly one thing and never a spotlight -- a participant assigned to
  * 'banner' sees a banner, full stop.
  *
- * Stage 2 is defined as a light-touch on-page annotation revealing exactly one
- * piece of evidence, so the tour chrome is deliberately stripped: no overlay
- * dimming, no next/previous buttons, no "Evidence X of Y" progress text. All
- * of those imply a browsable set of items, which is precisely the wrong signal
- * at a stage that has revealed one.
+ * Each reveal stage annotates the page with exactly one new piece of evidence.
+ * The tour chrome is deliberately stripped -- no previous button, no
+ * "Evidence X of Y" progress text -- because both imply a browsable set of
+ * items, which is the wrong signal at a stage that has revealed one and is
+ * withholding the rest.
+ *
+ * The page *is* dimmed around the spotlit element: an annotation nobody
+ * notices measures nothing, and the dimming is what makes the evidence read as
+ * the subject of the screen rather than as page furniture. It stays purely
+ * visual -- the page underneath remains fully usable (see EXTRA_CSS).
  */
 
 let activeHighlight: ReturnType<typeof driver> | null = null;
@@ -33,9 +38,31 @@ let activeHighlight: ReturnType<typeof driver> | null = null;
 let tearingDownInternally = false;
 let styleElement: HTMLStyleElement | null = null;
 let outlineLayer: HTMLElement | null = null;
+let blurLayer: HTMLElement | null = null;
 let repositionOutlines: (() => void) | null = null;
 
 const OUTLINE_ID = 'phish-ext-evidence-outlines';
+
+/**
+ * Above the dimming overlay (10000) so accumulated evidence stays bright
+ * rather than greying out with the page, but below Driver's popover (1e9) so
+ * an outline never paints over the text explaining it.
+ */
+const OUTLINE_Z = 999_999_999;
+
+/** The blur sits just under the outlines, so the boxes stay crisp. */
+const BLUR_Z = 999_999_998;
+
+/**
+ * Light on purpose. Enough that the page reads as pushed-back and the sharp
+ * evidence becomes the subject of the screen, but not so much that the page
+ * is unreadable -- the participant still has to be able to weigh the page and
+ * decide, and a warning that removes the choice measures nothing.
+ */
+const BLUR_PX = 3;
+
+/** Breathing room around each unblurred hole. */
+const HOLE_PAD = 6;
 
 /** Styling for our popover additions, appended to Driver.js's own stylesheet. */
 const EXTRA_CSS = `
@@ -49,7 +76,35 @@ const EXTRA_CSS = `
   letter-spacing: normal !important;
   float: none !important;
 }
-.phish-popover { background: #fff !important; color: #3c4043 !important; }
+/* Presence without blocking. The evidence stage has to be *noticed* -- a
+   quiet tooltip on a busy page gets read as chrome and ignored -- but it must
+   still leave the page usable, so the weight goes into size, a red spine,
+   depth, and a brief entrance rather than into an overlay. */
+.phish-popover {
+  background: #fff !important; color: #3c4043 !important;
+  min-width: 300px !important; max-width: 380px !important;
+  padding: 15px 17px !important;
+  border-radius: 12px !important;
+  border-left: 5px solid #b3261e !important;
+  box-shadow: 0 12px 34px rgba(0,0,0,.30), 0 0 0 1px rgba(179,38,30,.20) !important;
+  animation: phish-pop-in .22s cubic-bezier(.2,.8,.3,1) both;
+}
+@keyframes phish-pop-in {
+  from { opacity: 0; transform: translateY(7px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+/* Motion is what actually catches the eye, so the newest outline pulses --
+   three times, then settles. Left running it would become wallpaper, and on a
+   warning that is worse than not animating at all. */
+@keyframes phish-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(179,38,30,.18), 0 2px 10px rgba(0,0,0,.12); }
+  50%      { box-shadow: 0 0 0 9px rgba(179,38,30,.32), 0 2px 16px rgba(0,0,0,.20); }
+}
+.phish-outline-newest { animation: phish-pulse 1.1s ease-in-out 3; }
+@media (prefers-reduced-motion: reduce) {
+  .phish-popover { animation: none !important; }
+  .phish-outline-newest { animation: none !important; }
+}
 .phish-popover .driver-popover-title,
 .phish-popover .driver-popover-description,
 .phish-popover .driver-popover-footer {
@@ -58,8 +113,21 @@ const EXTRA_CSS = `
   min-height: 0 !important; min-width: 0 !important;
   margin-left: 0 !important; margin-right: 0 !important; padding: 0 !important;
 }
-.phish-popover .driver-popover-title { color: #b3261e !important; font-size: 13.5px !important; font-weight: 700 !important; }
-.phish-popover .driver-popover-description { font-size: 12.5px !important; line-height: 1.5 !important; color: #3c4043 !important; margin-top: 5px !important; }
+.phish-popover .driver-popover-title {
+  color: #b3261e !important; font-size: 15px !important; font-weight: 700 !important;
+  line-height: 1.35 !important; display: flex !important; align-items: flex-start !important; gap: 8px !important;
+}
+/* A warning mark in the heading: at a glance this reads as a warning rather
+   than as a product tooltip. */
+.phish-popover .driver-popover-title::before {
+  content: "!"; flex: none;
+  width: 20px !important; height: 20px !important;
+  background: #b3261e !important; color: #fff !important;
+  border-radius: 50% !important;
+  font: 700 13px/20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif !important;
+  text-align: center !important;
+}
+.phish-popover .driver-popover-description { font-size: 13px !important; line-height: 1.55 !important; color: #3c4043 !important; margin-top: 8px !important; }
 .phish-popover .driver-popover-description div { background: none !important; background-color: transparent !important; }
 .phish-popover .phish-compare {
   display: flex; align-items: center; gap: 6px; margin-top: 8px;
@@ -74,18 +142,33 @@ const EXTRA_CSS = `
   border: 1px solid rgba(30,125,52,0.25) !important; border-radius: 4px; padding: 2px 6px !important;
 }
 .phish-popover .phish-compare-vs { color: #9aa0a6; font-weight: 500; }
+.phish-popover .driver-popover-footer { margin-top: 12px !important; }
 .phish-popover .phish-btn {
-  all: unset; cursor: pointer; border-radius: 5px; padding: 4px 10px;
-  font: 600 12px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  all: unset; cursor: pointer; border-radius: 6px; padding: 6px 12px;
+  font: 600 12.5px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: #5f6368; border: 1px solid #d0d7de; margin-right: 6px;
 }
+.phish-popover .phish-btn:hover { background-color: #f3f4f6 !important; }
 .phish-popover .phish-btn-strong { color: #fff !important; background-color: #b3261e !important; border-color: #b3261e !important; }
-/* The overlay is fully transparent here, but it still sits over the page and
-   swallows every click -- so the participant could neither use the page nor
-   click anything without it registering as "clicked outside". Let pointer
-   events through; the popover itself stays interactive. */
-.driver-overlay { pointer-events: none !important; }
-.driver-popover { pointer-events: auto !important; }
+/* driver.css blocks interaction in TWO separate ways, and both have to go.
+   The obvious one is the overlay swallowing clicks. The other is easy to miss:
+   Driver puts a driver-active class on <body>, and its stylesheet carries
+   ".driver-active * { pointer-events: none }" -- which freezes the entire
+   page, not just the overlay.
+
+   That second one would have quietly wrecked the study. Whether the
+   participant types into the credential field IS the primary outcome, so a
+   frozen page records Progressive Reveal as perfectly effective for a reason
+   that has nothing to do with the warning design: they could not have complied
+   even if they wanted to. Every condition has to leave it possible to fall for
+   the page; only then does refusing to mean anything.
+
+   Dimming is visual, interception is behavioural, and only the first is
+   wanted. Specificity note: ".driver-active .driver-overlay" (0,2,0) has to
+   outrank the ".driver-active *" reset (0,1,0) restoring the page. */
+.driver-active * { pointer-events: auto !important; }
+.driver-active .driver-overlay { pointer-events: none !important; }
+.driver-popover, .driver-popover * { pointer-events: auto !important; }
 `;
 
 /**
@@ -112,25 +195,28 @@ function drawOutlines(evidence: FlaggedElement[]): void {
   outlineLayer = document.createElement('div');
   outlineLayer.id = OUTLINE_ID;
   outlineLayer.style.cssText =
-    'position:fixed;inset:0;pointer-events:none;z-index:2147483646;';
+    `position:fixed;inset:0;pointer-events:none;z-index:${OUTLINE_Z};`;
 
   const boxes = targets.map(({ flagged }, index) => {
     const box = document.createElement('div');
     box.style.cssText =
       // border-box so the 2px border sits inside the measured box -- otherwise
       // the outline renders 4px wider than the element it is framing.
-      'position:absolute;box-sizing:border-box;border:2px solid #b3261e;border-radius:6px;'
-      + 'background:rgba(179,38,30,0.06);'
+      'position:absolute;box-sizing:border-box;border:3px solid #b3261e;border-radius:7px;'
+      + 'background:rgba(179,38,30,0.08);'
       + 'box-shadow:0 0 0 3px rgba(179,38,30,0.18), 0 2px 10px rgba(0,0,0,0.12);'
-      + 'transition:all .15s ease;';
+      + 'transition:left .15s ease, top .15s ease, width .15s ease, height .15s ease;';
+    // Only the most recently revealed item pulses; the earlier ones stay put
+    // so the accumulated picture does not turn into a light show.
+    if (index === targets.length - 1) box.className = 'phish-outline-newest';
     const label = document.createElement('div');
     label.textContent = `${index + 1}. ${flagged.title ?? flagged.element}`;
     label.style.cssText =
-      'position:absolute;top:-23px;left:-2px;background:#b3261e;color:#fff;'
-      + 'font:600 11px/1.7 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;'
-      + 'padding:1px 9px;border-radius:5px 5px 5px 0;white-space:nowrap;'
-      + 'box-shadow:0 2px 6px rgba(0,0,0,0.2);max-width:280px;overflow:hidden;'
-      + 'text-overflow:ellipsis;';
+      'position:absolute;top:-26px;left:-3px;background:#b3261e;color:#fff;'
+      + 'font:700 12px/1.75 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;'
+      + 'padding:2px 10px;border-radius:6px 6px 6px 0;white-space:nowrap;'
+      + 'box-shadow:0 3px 8px rgba(0,0,0,0.28);max-width:320px;overflow:hidden;'
+      + 'text-overflow:ellipsis;letter-spacing:.01em;';
     box.append(label);
     outlineLayer!.append(box);
     return box;
@@ -138,10 +224,21 @@ function drawOutlines(evidence: FlaggedElement[]): void {
 
   document.body.append(outlineLayer);
 
+  // The blur goes in underneath the outlines. Its holes are cut in `place()`
+  // below, so it never renders as a full-page blur even for one frame.
+  if (canBlur()) {
+    blurLayer = document.createElement('div');
+    blurLayer.style.cssText =
+      `position:fixed;inset:0;pointer-events:none;z-index:${BLUR_Z};`
+      + `backdrop-filter:blur(${BLUR_PX}px);-webkit-backdrop-filter:blur(${BLUR_PX}px);`;
+    document.body.append(blurLayer);
+  }
+
   /** 3px of breathing room on every side, hence +6 on each dimension. */
   const PAD = 3;
 
   const place = () => {
+    const holes: Hole[] = [];
     targets.forEach(({ el }, i) => {
       const rect = el.getBoundingClientRect();
       const box = boxes[i];
@@ -158,7 +255,12 @@ function drawOutlines(evidence: FlaggedElement[]): void {
       box.style.top = `${rect.top - PAD}px`;
       box.style.width = `${rect.width + PAD * 2}px`;
       box.style.height = `${rect.height + PAD * 2}px`;
+      // Everything revealed so far stays sharp, not just the newest piece --
+      // the participant is meant to be assembling a picture from the evidence,
+      // and blurring what they have already been shown would undo that.
+      holes.push({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
     });
+    paintBlurHoles(holes);
   };
 
   // Scroll fires far faster than the screen repaints; coalescing to one
@@ -177,6 +279,75 @@ function drawOutlines(evidence: FlaggedElement[]): void {
   window.addEventListener('resize', repositionOutlines);
 }
 
+/**
+ * Can we punch holes in a blur?
+ *
+ * Driver's overlay is an SVG whose spotlight is a hole in its *path*, and
+ * backdrop-filter clips to an element's box rather than to path geometry --
+ * blurring that overlay would blur the spotlight along with everything else.
+ * So the blur is our own layer, and the holes are cut with a mask.
+ *
+ * Both features are checked because without the mask the layer would blur the
+ * entire page including the evidence, which is worse than no blur at all.
+ * Unsupported means we simply keep the dimming and skip the blur.
+ */
+function canBlur(): boolean {
+  return (
+    typeof CSS !== 'undefined'
+    && typeof CSS.supports === 'function'
+    && CSS.supports('mask-composite', 'exclude')
+    && CSS.supports('backdrop-filter', 'blur(3px)')
+  );
+}
+
+type Hole = { left: number; top: number; width: number; height: number };
+
+/**
+ * Repaint the blur's mask so every revealed element stays sharp.
+ *
+ * The mask is a stack: one full-viewport layer at the bottom, then one layer
+ * per hole above it composited with `exclude` (XOR). Since each hole lies
+ * inside the full cover, XOR removes it -- which is how several holes are cut
+ * at once, one per piece of evidence revealed so far.
+ */
+function paintBlurHoles(all: Hole[]): void {
+  if (!blurLayer) return;
+  // XOR means two overlapping holes cancel back to opaque, leaving a blurred
+  // patch *inside* the evidence. Flagged elements nest in practice -- a logo
+  // inside a flagged header -- so drop any hole already contained in another
+  // and let the larger one cover it.
+  const holes = all.filter((h, i) => !all.some((other, j) => (
+    j !== i
+    && other.left <= h.left && other.top <= h.top
+    && other.left + other.width >= h.left + h.width
+    && other.top + other.height >= h.top + h.height
+    // A pair of identical rects would otherwise discard both.
+    && (other.width * other.height > h.width * h.height || j < i)
+  )));
+  const images: string[] = [];
+  const sizes: string[] = [];
+  const positions: string[] = [];
+  const composites: string[] = [];
+  // Holes first: the first mask layer is the topmost one.
+  for (const h of holes) {
+    images.push('linear-gradient(#000 0 0)');
+    sizes.push(`${h.width + HOLE_PAD * 2}px ${h.height + HOLE_PAD * 2}px`);
+    positions.push(`${h.left - HOLE_PAD}px ${h.top - HOLE_PAD}px`);
+    composites.push('exclude');
+  }
+  images.push('linear-gradient(#000 0 0)');
+  sizes.push('100% 100%');
+  positions.push('0 0');
+  composites.push('add');
+
+  const style = blurLayer.style;
+  style.setProperty('mask-image', images.join(','));
+  style.setProperty('mask-size', sizes.join(','));
+  style.setProperty('mask-position', positions.join(','));
+  style.setProperty('mask-repeat', 'no-repeat');
+  style.setProperty('mask-composite', composites.join(','));
+}
+
 function clearOutlines(): void {
   if (repositionOutlines) {
     window.removeEventListener('scroll', repositionOutlines, true);
@@ -185,6 +356,8 @@ function clearOutlines(): void {
   }
   outlineLayer?.remove();
   outlineLayer = null;
+  blurLayer?.remove();
+  blurLayer = null;
 }
 
 /** Inject Driver.js's stylesheet, once, the first time a highlight is shown. */
@@ -351,8 +524,11 @@ export function highlightEvidence(
 
   activeHighlight = driver({
     steps: [stepForElement(newest, Boolean(onNext), comparison)],
-    // Light touch: outline the element, do not dim the page around it.
-    overlayOpacity: 0,
+    // Dim the page around the spotlit element. Dimming and click-blocking are
+    // separate concerns: the overlay below is set to pointer-events:none, so
+    // the page darkens but stays fully usable. Driver cuts a hole around the
+    // current element, which is what makes the evidence jump out.
+    overlayOpacity: 0.45,
     smoothScroll: true,
     stageRadius: 8,
     stagePadding: 6,

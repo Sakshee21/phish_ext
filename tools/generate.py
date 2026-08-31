@@ -175,30 +175,48 @@ DOM_EXTRACT_JS = r"""
   const rgbToHex = (r, g, b) =>
     '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
 
-  const computedBgColor = (el) => {
-    if (!el) return null;
-    const c = getComputedStyle(el).backgroundColor;
-    const m = c.match(/rgba?\(([^)]+)\)/);
+  const parse = (c) => {
+    const m = (c || '').match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
     const a = m[1].split(',').map((s) => parseFloat(s.trim()));
-    if (a.length === 4 && a[3] === 0) return null; // fully transparent
-    return rgbToHex(a[0], a[1], a[2]);
+    if (a.length === 4 && a[3] < 0.5) return null;   // effectively transparent
+    return [a[0], a[1], a[2]];
   };
 
-  const colors = [];
-  const seen = new Set();
-  const els = [
-    document.body,
-    document.querySelector('header'),
-    document.querySelector('nav'),
-    document.querySelector('main'),
-    document.querySelector('[class*="logo"],[id*="logo"],[class*="brand"],[id*="brand"]'),
-  ];
-  for (const el of els) {
-    const c = computedBgColor(el);
-    if (c && !seen.has(c)) { seen.add(c); colors.push(c); }
-    if (colors.length >= 5) break;
+  // How far a colour is from grey. Login pages are mostly white and near-black
+  // backgrounds, so sampling backgrounds alone yields #ffffff for nearly every
+  // brand -- which matches everything and therefore evidences nothing. Ranking
+  // by saturation surfaces the accent colours that actually identify a brand.
+  const saturation = ([r, g, b]) => {
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    return max === 0 ? 0 : (max - min) / max;
+  };
+
+  const seen = new Map();
+  const consider = (rgb) => {
+    if (!rgb) return;
+    const hex = rgbToHex(rgb[0], rgb[1], rgb[2]);
+    if (!seen.has(hex)) seen.set(hex, saturation(rgb));
+  };
+
+  // Backgrounds carry the page's overall tone...
+  for (const sel of ['body', 'header', 'nav', 'main', '[class*="logo"],[id*="logo"],[class*="brand"],[id*="brand"]']) {
+    const el = document.querySelector(sel);
+    if (el) consider(parse(getComputedStyle(el).backgroundColor));
   }
+  // ...and buttons and links carry the brand's accent, which is the part that
+  // actually distinguishes one login page from another.
+  const accents = document.querySelectorAll(
+    'button, [type="submit"], a.button, .btn, [class*="button"], [class*="cta"], a'
+  );
+  for (const el of Array.from(accents).slice(0, 60)) {
+    const cs = getComputedStyle(el);
+    consider(parse(cs.backgroundColor));
+    consider(parse(cs.color));
+  }
+
+  // Saturated first, so a brand's red/blue outranks the page's white.
+  const colors = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([hex]) => hex);
 
   const stopWords = new Set([
     'the','a','an','and','or','for','to','in','on','of','at','is','are','you','your',

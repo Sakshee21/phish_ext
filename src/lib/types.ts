@@ -132,6 +132,14 @@ export interface DOMFeatures {
   hasLoginForm: boolean;
   /** Number of password-type input fields */
   passwordFieldCount: number;
+  /**
+   * The page collects credentials, whether or not a password box is present.
+   *
+   * Two-step logins (Shopify, Google, Microsoft) ask for the identifier first,
+   * so a clone's first screen has only an email field. Gating identification
+   * on a password field misses that entire class of phishing page.
+   */
+  hasCredentialField?: boolean;
   /** src attributes of any <img> elements that look like logos */
   logoCandidates: string[];
   /** Dominant CSS colours extracted from the page */

@@ -193,7 +193,21 @@ export default defineBackground(() => {
   }
 
   function identifyBrandByText(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
-    if (!features.hasLoginForm) return null;
+    const collectsCredentials = features.hasCredentialField ?? features.hasLoginForm;
+
+    /**
+     * Hosts this page pulls content from, for the impersonation check below.
+     */
+    const externalHosts = features.elements
+      .filter((e) => e.kind === 'external-asset' && e.detail)
+      .map((e) => e.detail!.toLowerCase());
+
+    /** Does the page serve content from this brand's own domains? */
+    const hotlinksBrand = (brand: BrandReference): boolean =>
+      brand.allowedDomains.some((d) => {
+        const domain = d.toLowerCase();
+        return externalHosts.some((h) => h === domain || h.endsWith(`.${domain}`));
+      });
 
     const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
     const pageWords = new Set<string>([
@@ -205,6 +219,21 @@ export default defineBackground(() => {
     let lookalike: TextMatch | null = null;
 
     for (const brand of brands) {
+      /**
+       * Naming a brand is not enough on its own -- that describes every review,
+       * tutorial and news article on the web. The page must also be doing
+       * something a page merely *about* the brand would not:
+       *
+       *  - collecting credentials, or
+       *  - serving its content from the brand's own servers.
+       *
+       * The second matters because clones are built by copying markup, which
+       * drags the original's absolute URLs along with it. A page on some other
+       * domain loading its images from paypalobjects.com is not writing about
+       * PayPal, it is wearing it -- and unlike a screenshot hash, this holds at
+       * any window size.
+       */
+      if (!collectsCredentials && !hotlinksBrand(brand)) continue;
       const idToken = brand.id.toLowerCase();
       const nameTokens = [...new Set(
         brand.name.toLowerCase().split(/\s+/).map((t) => t.replace(/[^a-z]/g, '')).filter((t) => t.length >= 3),
@@ -479,7 +508,7 @@ export default defineBackground(() => {
           element: 'password field',
           reason: 'form_layout',
           selector: passwordField.selector,
-          title: 'Your password would be sent here',
+          title: 'Your details would be sent here',
           note:
             `Anything typed here goes to "${domain.hostname}", not to ${matchedBrand.name}.`,
         });

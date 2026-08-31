@@ -84,6 +84,16 @@
       "allowedDomains": [
         "idfcfirst.bank.in"
       ]
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal",
+      "url": "https://www.paypal.com/signin",
+      "allowedDomains": [
+        "paypal.com",
+        "paypalobjects.com"
+      ],
+      "waitForSelector": "input[type=\"email\"], input[name=\"login_email\"]"
     }
   ]
 }

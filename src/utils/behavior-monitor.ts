@@ -249,9 +249,13 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     }
     // Past the first reveal, require that they are still moving toward the
     // credentials. Reading the evidence and stopping ends the escalation.
-    if (REQUIRE_HESITATION_AFTER_FIRST_REVEAL && stage > 1 && lastHesitationAt < stageEnteredAt) {
+    // `<=` not `<`: a signal-driven escalation stamps lastHesitationAt and
+    // stageEnteredAt within the same millisecond, and `<` would read that as
+    // "hesitation newer than the stage" and let one free dwell-advance through.
+    if (REQUIRE_HESITATION_AFTER_FIRST_REVEAL && stage > 1 && lastHesitationAt <= stageEnteredAt) {
       return;
     }
+    console.debug(`[phish_ext] escalating: dwell elapsed at stage ${stage}`);
     escalate();
   }
 
@@ -262,9 +266,15 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
 
   /** A hesitation signal from the shared tracker: they are still heading for
    *  the credentials, so the next piece of evidence is warranted. */
-  function noteHesitation(_signal: HesitationSignal): void {
+  function noteHesitation(signal: HesitationSignal): void {
     if (disposed) return;
     noteInteraction();
+    const now = Date.now();
+    const throttled = now - lastSignalEscalation < SIGNAL_COOLDOWN_MS;
+    console.debug(
+      `[phish_ext] hesitation signal "${signal}" at stage ${stage}`
+      + (throttled ? ' (within cooldown, not escalating)' : ' -> escalating'),
+    );
     signalEscalate();
   }
 
