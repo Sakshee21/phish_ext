@@ -138,8 +138,13 @@ Stage count follows the evidence: 5 pieces → 7 stages, 2 pieces → 4 stages.
 
 **Advancing happens two ways:**
 
-- **Automatically**, while hesitation signals keep firing — 6s before the first
-  piece, 6s between pieces, 8s before the confirmation.
+- **Automatically**, but dwell alone is a slow inaction fallback (~10s before the
+  first piece, ~12s between pieces, ~15s before the confirmation) and can carry a
+  visit no further than the first reveal (stage 2) — past that, an *auto* advance
+  needs a fresh hesitation signal (approach/focus/typing) since the current stage
+  appeared, and those escalate immediately, faster than the dwell timer. So on an
+  evidence-heavy page, doing nothing does not race through the stages; stage count
+  reflects hesitation, not how much evidence the page happened to have.
 - **Manually**, via the **Next** button on each popover.
 
 These are logged separately (`auto` vs `manual`) — each `escalated` event
@@ -176,10 +181,10 @@ browser.storage.local.get('phish_interactions').then(e => console.table(e.phish_
 ```
 
 Each event carries `type` (`shown` / `escalated` / `dismissed` / `proceeded` /
-`went-back` / `left-page`, plus the `approached` / `focused` / `typed`
-engagement micro-events for Progressive Reveal), `condition`, a `visitId`
-grouping all events of one flagged page-load, and for Progressive Reveal the
-`stage` reached. The full detection snapshot (signals, flagged elements,
+`went-back` / `left-page`, plus the `approached` / `focused` / `typed` /
+`submitted` engagement micro-events, which are logged for **all five**
+conditions), `condition`, a `visitId` grouping all events of one flagged
+page-load, and for Progressive Reveal the `stage` reached. The full detection snapshot (signals, flagged elements,
 reasoning, comparison) is stored **once per visit on the `shown` event**; later
 events in the visit omit it to keep storage lean.
 
@@ -235,11 +240,16 @@ Worth knowing before drawing conclusions from pilot data:
   guaranteed under aggressive context teardown. It closes the old blind spot —
   a participant who reacts by navigating away is now counted — but treat it as
   a soft signal rather than a hard one.
-- **Micro-events exist only for Progressive Reveal.** `approached` / `focused` /
-  `typed` come from the behavior monitor, which only runs in the `progressive`
-  condition — static conditions have no engagement micro-signals. Cross-condition
-  comparisons must rely on the timing metrics (`timeToReactMs`, `engagedMs`),
-  which all conditions produce.
+- **Micro-events are logged for all five conditions.** `approached` / `focused` /
+  `typed` / `submitted` come from one shared engagement tracker that runs for
+  every condition, so they are directly comparable across conditions — only
+  Progressive Reveal additionally *acts* on them to escalate. Detection is
+  identical across conditions by design: `approached` uses a hysteresis latch
+  (fire once on reaching the field, re-arm only after a clear exit) precisely so
+  that conditions rendering at the field (PR, Tooltip) can't accrue extra
+  incidental approaches versus Banner/Modal. A caveat still worth checking in
+  pilot data: `focused`/`typed` require a real credential field, so a page with
+  none (e.g. a homepage clone) yields no typing signal in any condition.
 - **Filtered exports break visit metrics.** The `complete` flag marks visits a
   filter cut short; only an unfiltered export should be used for metric-level
   analysis.

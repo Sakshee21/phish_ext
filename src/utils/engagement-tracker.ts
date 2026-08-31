@@ -14,8 +14,32 @@
  * never in how they are detected.
  */
 
-/** Cursor-to-credential-field distance (px) that counts as approaching. */
-const APPROACH_PX = 120;
+/** Cursor within this distance (px) of the field counts as having reached it. */
+const APPROACH_ENTER_PX = 120;
+
+/**
+ * Once 'approached' has fired, the cursor must retreat past this larger radius
+ * before another can fire. The gap between the two radii is hysteresis (a
+ * Schmitt trigger), and it exists to protect the cross-condition comparison,
+ * not just to tidy the logs.
+ *
+ * With a single threshold, "approached" counts whatever crosses one line -- so
+ * a cursor loitering around it emits a burst of signals. That is not evenly
+ * distributed across conditions: Progressive Reveal outlines evidence at the
+ * field and Tooltip anchors its bubble to it, so in exactly those conditions
+ * the participant's reading movement sits on top of the trip line, while Banner
+ * and Modal render nothing there and never provoke it. Left unfixed, PR/Tooltip
+ * would show structurally higher approach counts for a reason that has nothing
+ * to do with intent to type -- a measurement artifact masquerading as a
+ * behavioural difference between warning designs.
+ *
+ * Requiring a clear exit past this radius before re-arming makes one signal
+ * mean one genuine approach: cross in, and it will not fire again until the
+ * cursor has plainly left. Deliberately going back for the field a second time
+ * (out past the re-arm radius, then in again) still counts -- that is a real
+ * second approach, not reading jitter.
+ */
+const APPROACH_REARM_PX = 200;
 
 /** mousemove sampling interval (ms). */
 const MOVE_THROTTLE_MS = 150;
@@ -77,7 +101,9 @@ export function createEngagementTracker(
 ): EngagementTracker {
   let disposed = false;
   let lastMoveSampledAt = 0;
-  let wasNearField = false;
+  /** Hysteresis latch: can the next in-crossing fire, or must the cursor leave
+   *  first? Starts armed so the first genuine approach counts. */
+  let approachArmed = true;
   let typedThisFocus = false;
 
   function onMove(event: MouseEvent): void {
@@ -90,11 +116,18 @@ export function createEngagementTracker(
     const box = field.getBoundingClientRect();
     const dx = Math.max(box.left - event.clientX, 0, event.clientX - box.right);
     const dy = Math.max(box.top - event.clientY, 0, event.clientY - box.bottom);
-    const near = Math.hypot(dx, dy) <= APPROACH_PX;
+    const dist = Math.hypot(dx, dy);
 
-    // Fire on *entering* the zone, not repeatedly while the cursor sits in it.
-    if (near && !wasNearField) onSignal('approached');
-    wasNearField = near;
+    // Fire once when the cursor reaches the field; then stay silent until it has
+    // clearly left again (past the wider re-arm radius). The gap between the two
+    // radii is what stops reading movement that loiters near the field -- the
+    // Progressive Reveal / Tooltip case -- from emitting a stream of signals.
+    if (approachArmed && dist <= APPROACH_ENTER_PX) {
+      onSignal('approached');
+      approachArmed = false;
+    } else if (!approachArmed && dist >= APPROACH_REARM_PX) {
+      approachArmed = true;
+    }
   }
 
   function onFocusIn(event: FocusEvent): void {

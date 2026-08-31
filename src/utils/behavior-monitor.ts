@@ -80,22 +80,39 @@ function finalStage(total: number): EscalationStage {
 // collection: changing them mid-study makes participants non-comparable, the
 // same hazard as re-randomising assignment and just as invisible afterwards.
 
-/** Dwell (ms) at stage 1 before the first piece of evidence appears. */
-const WATCH_DWELL_MS = 6000;
+// Dwell is the *inaction* fallback, not the intended path. It sits in the
+// 10-15s band on purpose: a real participant who is going to react reaches for
+// the credentials within a second or two, and those signals (approach / focus /
+// typing) escalate immediately -- always faster than these timers. So dwell
+// only ever drives the visit forward when genuinely nothing is happening, and
+// it does so slowly enough that "did nothing for a while" is what it measures,
+// not "the page happened to have a lot of evidence to march through". Paired
+// with REQUIRE_HESITATION_AFTER_FIRST_REVEAL below, dwell alone can carry a
+// visit no further than stage 2 (the first reveal) regardless of evidence
+// count; every stage past that needs a real signal.
 
-/** Dwell (ms) between one piece of evidence and the next. */
-const EVIDENCE_DWELL_MS = 6000;
+/** Dwell (ms) at stage 1 before the first piece of evidence appears. */
+const WATCH_DWELL_MS = 10_000;
+
+/** Dwell (ms) between one piece of evidence and the next (gated: only counts
+ *  once a hesitation signal has fired this stage -- see below). */
+const EVIDENCE_DWELL_MS = 12_000;
 
 /** Dwell (ms) after the last piece before the confirmation is required. */
-const CONFIRM_DWELL_MS = 8000;
+const CONFIRM_DWELL_MS = 15_000;
 
 /**
  * Dwell only escalates if the participant interacted within this window (and
  * the page is visible). This is what makes escalation lazy rather than a plain
  * timer -- an abandoned tab stops progressing instead of reaching a modal
  * nobody is looking at.
+ *
+ * Kept comfortably above WATCH_DWELL_MS so the first reveal still fires for
+ * someone present-but-still (reading without moving the mouse); if it were
+ * below, timing jitter around the boundary could strand an idle-but-present
+ * participant on the bare badge and they'd never see any evidence.
  */
-const ENGAGEMENT_WINDOW_MS = 10_000;
+const ENGAGEMENT_WINDOW_MS = 15_000;
 
 /**
  * Beyond the first reveal, dwell alone is not enough: a *hesitation* signal
@@ -103,12 +120,15 @@ const ENGAGEMENT_WINDOW_MS = 10_000;
  * have fired since the current stage appeared.
  *
  * Without this, any mouse movement anywhere on the page counted as engagement,
- * so evidence marched forward on a 6-second clock whether or not the
- * participant was still heading for the credentials -- which is the thing the
- * escalation is supposed to be responding to. Someone who reads the first
- * piece of evidence and stops now stays where they are; the count of stages
- * they saw stays a measurement of what they needed, not of how long they left
- * the tab open.
+ * so evidence marched forward on the dwell clock whether or not the participant
+ * was still heading for the credentials -- which is the thing the escalation is
+ * supposed to be responding to. Someone who reads the first piece of evidence
+ * and stops now stays where they are; the count of stages they saw stays a
+ * measurement of what they needed, not of how long they left the tab open.
+ *
+ * This is also the guarantee that dwell cannot race an evidence-heavy page: no
+ * matter how many pieces there are, the timer alone advances only stage 1 -> 2.
+ * Reaching stage 3+ always requires a fresh approach/focus/typing signal.
  */
 const REQUIRE_HESITATION_AFTER_FIRST_REVEAL = true;
 
