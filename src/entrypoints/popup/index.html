@@ -29,6 +29,15 @@
         <label for="condition-select">Warning condition</label>
         <select id="condition-select"></select>
       </section>
+      <section id="report" hidden>
+        <div class="report-context">
+          <span class="report-label">Flagged as</span>
+          <span id="report-brand">—</span>
+          <span id="report-host" class="report-host"></span>
+        </div>
+        <button id="report-btn" type="button" class="report-btn">Report false positive</button>
+        <small id="report-status"></small>
+      </section>
       <footer>
         <button id="open-logs" type="button">View logs</button>
         <small id="version">v0.0.1</small>

@@ -24,9 +24,9 @@ function base64ToBlob(base64: string, mimeType = 'image/png'): Blob {
  * decode the screenshot bytes into pixels.
  *
  * Comparison: two hashes are "close" if Hamming distance <= threshold.
- * Typical thresholds: < 5 for a 64-bit pHash.
+ * The shipped threshold lives in brands.json (`phashThreshold`, currently 7).
  */
-async function computePHash(imageData: string): Promise<string> {
+async function computePHash(imageData: string, devicePixelRatio?: number): Promise<string> {
   const blob = base64ToBlob(imageData);
   const bitmap = await createImageBitmap(blob);
 
@@ -40,7 +40,7 @@ async function computePHash(imageData: string): Promise<string> {
   ctx.drawImage(bitmap, 0, 0);
   const pixels = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
 
-  return computePerceptualHash(pixels);
+  return computePerceptualHash(pixels, devicePixelRatio);
 }
 
 // ── Logo template matching (Layer 3) ──
@@ -61,21 +61,30 @@ async function matchLogoTemplates(imageData: string, brandId: string): Promise<A
 
 // ── Message handler ──
 
-browser.runtime.onMessage.addListener(
-  async (message: ExtensionMessage): Promise<ExtensionMessage | undefined> => {
-    switch (message.type) {
-      case 'COMPUTE_PHASH': {
-        const hash = await computePHash(message.imageData);
-        return { type: 'PHASH_RESULT', hash };
-      }
+/**
+ * Handle only this document's own messages, and answer everything else with
+ * a *synchronous* undefined.
+ *
+ * The async/await form of the listener is a trap here: an async listener
+ * returns a Promise for EVERY message, and `runtime.sendMessage` broadcasts
+ * to every extension context -- so an instant `Promise<undefined>` from this
+ * document wins the response race against the background's real, slower
+ * reply to the same message (e.g. the popup's tab-verdict lookup), silently
+ * eating it. A sync `undefined` does not claim the response channel at all.
+ */
+browser.runtime.onMessage.addListener((message: ExtensionMessage): Promise<ExtensionMessage> | undefined => {
+  switch (message.type) {
+    case 'COMPUTE_PHASH':
+      return computePHash(message.imageData, message.devicePixelRatio).then(
+        (hash): ExtensionMessage => ({ type: 'PHASH_RESULT', hash }),
+      );
 
-      case 'MATCH_LOGOS': {
-        const matches = await matchLogoTemplates(message.imageData, message.brandId);
-        return { type: 'LOGO_MATCH_RESULT', matches };
-      }
+    case 'MATCH_LOGOS':
+      return matchLogoTemplates(message.imageData, message.brandId).then(
+        (matches): ExtensionMessage => ({ type: 'LOGO_MATCH_RESULT', matches }),
+      );
 
-      default:
-        return undefined;
-    }
-  },
-);
+    default:
+      return undefined;
+  }
+});

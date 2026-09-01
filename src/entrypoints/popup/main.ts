@@ -10,7 +10,7 @@ const versionEl = document.querySelector<HTMLElement>('#version')!;
 
 import { WARNING_CONDITIONS, WARNING_CONDITION_LABELS, isWarningCondition } from '@/lib/conditions';
 import { DEV_MODE, resolveCondition, setConditionForDev } from '@/utils/condition-assignment';
-import type { ExtensionMessage } from '@/lib/types';
+import type { ExtensionMessage, TabVerdict } from '@/lib/types';
 
 // ── Condition selector (DEV BUILDS ONLY) ──
 // Participants are randomly assigned one condition on install and must keep it
@@ -90,6 +90,96 @@ openLogsBtn.addEventListener('click', () => {
   browser.tabs.create({ url: browser.runtime.getURL('/logs.html') }).catch(() => {});
 });
 
+// ── False-positive reporting ──
+// Shown only when the active tab's current page was flagged with a warning:
+// the participant disagrees, one click sends the verdict to the researcher's
+// review queue via the submission site. One report per visit.
+
+const reportSection = document.querySelector<HTMLElement>('#report')!;
+const reportBrand = document.querySelector<HTMLSpanElement>('#report-brand')!;
+const reportHost = document.querySelector<HTMLSpanElement>('#report-host')!;
+const reportBtn = document.querySelector<HTMLButtonElement>('#report-btn')!;
+const reportStatus = document.querySelector<HTMLElement>('#report-status')!;
+
+/** The submission site origin injected at build time (wxt.config.ts). */
+const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
+
+function setReportStatus(text: string, isError = false): void {
+  reportStatus.textContent = text;
+  reportStatus.classList.toggle('is-error', isError);
+}
+
+function setReportedState(): void {
+  reportBtn.disabled = true;
+  reportBtn.textContent = 'Reported ✓';
+}
+
+async function initReport(): Promise<void> {
+  // No site configured (a local build without one): the button can do
+  // nothing, so it stays hidden rather than collecting silent failures.
+  if (!submissionSite) return;
+
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id == null) return;
+  const res = (await browser.runtime.sendMessage({
+    type: 'GET_TAB_STATUS',
+    tabId: tab.id,
+  } satisfies ExtensionMessage)) as { type?: string; entry?: TabVerdict | null };
+  const entry = res?.type === 'TAB_STATUS' ? res.entry : null;
+
+  // Only a flagged page can be a false positive; anything else leaves the
+  // popup exactly as it was. Logged rather than silent: when this fires
+  // unexpectedly, the popup console is where the hunt starts.
+  if (!entry || !entry.isSuspicious) {
+    console.warn(
+      '[phish_ext] No reportable verdict for tab',
+      tab.id,
+      res?.type === 'TAB_STATUS'
+        ? '(verdict exists, page was not flagged)'
+        : '(no TAB_STATUS answer from the background)',
+    );
+    return;
+  }
+
+  reportSection.hidden = false;
+  reportBrand.textContent = entry.matchedBrand ?? 'unknown brand';
+  reportHost.textContent = entry.hostname;
+  reportHost.title = entry.url;
+  if (entry.reported) {
+    setReportedState();
+    setReportStatus('Already reported — thank you.');
+    return;
+  }
+
+  reportBtn.addEventListener('click', () => {
+    if (tab.id == null) return;
+    reportBtn.disabled = true;
+    reportBtn.textContent = 'Reporting…';
+    setReportStatus('');
+    void browser.runtime
+      .sendMessage({ type: 'REPORT_FALSE_POSITIVE', tabId: tab.id } satisfies ExtensionMessage)
+      .then((raw) => {
+        const result = raw as { type?: string; ok?: boolean; error?: string; alreadyReported?: boolean };
+        if (result?.type === 'REPORT_RESULT' && result.ok) {
+          setReportedState();
+          setReportStatus('Sent to the researchers — thank you.');
+        } else if (result?.alreadyReported) {
+          setReportedState();
+          setReportStatus('Already reported — thank you.');
+        } else {
+          reportBtn.disabled = false;
+          reportBtn.textContent = 'Retry';
+          setReportStatus(result?.error ?? 'Report failed.', true);
+        }
+      })
+      .catch((err: unknown) => {
+        reportBtn.disabled = false;
+        reportBtn.textContent = 'Retry';
+        setReportStatus(err instanceof Error ? err.message : 'Report failed.', true);
+      });
+  });
+}
+
 async function init(): Promise<void> {
   versionEl.textContent = `v${browser.runtime.getManifest().version}`;
   if (DEV_MODE) {
@@ -97,6 +187,11 @@ async function init(): Promise<void> {
     if (condition) conditionSelect.value = condition;
   }
   await refreshStats();
+  await initReport().catch((err: unknown) => {
+    // Reporting is best-effort chrome; a failure to even populate it should
+    // never take down the rest of the popup.
+    console.warn('[phish_ext] Report UI unavailable:', err);
+  });
 }
 
 void init();

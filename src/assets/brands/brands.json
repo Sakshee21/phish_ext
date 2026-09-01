@@ -2,16 +2,13 @@
   {
     "id": "dummybank",
     "name": "DummyBank",
-    "phash": "b3cc668c66993333",
+    "phash": "b3996666cc668c99",
     "phashByViewport": {
-      "1280x800": "b3cc668c66993333",
-      "1366x768": "b399668ccc669933",
-      "1440x900": "b3cc669866993366",
-      "1536x864": "b399668ccc669933",
-      "1600x900": "b39966cccc329933",
-      "1920x1080": "b3cc662699339966"
+      "1280x800": "b3996666cc668c99",
+      "1366x768": "b39966668c66cc99",
+      "1920x1080": "b3cc66993399668c"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "dummybank.com"
     ],
@@ -44,16 +41,13 @@
   {
     "id": "github",
     "name": "GitHub",
-    "phash": "b399cc6664dc3133",
+    "phash": "b33389e6666c8c99",
     "phashByViewport": {
-      "1280x800": "b399cc6664dc3133",
-      "1366x768": "b399cc66668c9933",
-      "1440x900": "b3998c6666cc9933",
-      "1536x864": "b3338c6666cc9999",
-      "1600x900": "b33389ce66668c99",
-      "1920x1080": "b33399cc6666668c"
+      "1280x800": "b33389e6666c8c99",
+      "1366x768": "b33389e6666c9899",
+      "1920x1080": "b3338cc6666c9999"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "github.com"
     ],
@@ -89,16 +83,13 @@
   {
     "id": "shopify",
     "name": "Shopify",
-    "phash": "9b3064669b9b66cc",
+    "phash": "9b246466339b3367",
     "phashByViewport": {
-      "1280x800": "9b3064669b9b66cc",
-      "1366x768": "9b6164669b9b6664",
-      "1440x900": "996464669b9b3366",
-      "1536x864": "9976646633993366",
-      "1600x900": "9936666633993393",
-      "1920x1080": "99b166cc66339999"
+      "1280x800": "9b246466339b3367",
+      "1366x768": "9b646466339b3366",
+      "1920x1080": "9966666633993366"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "shopify.com",
       "myshopify.com"
@@ -135,16 +126,13 @@
   {
     "id": "vtop",
     "name": "VTOP",
-    "phash": "bf60181c5f5d1a3a",
+    "phash": "bf6378184c5d5d18",
     "phashByViewport": {
-      "1280x800": "bf60181c5f5d1a3a",
-      "1366x768": "bf62181e5d5d1c1a",
-      "1440x900": "9f631c1d1f591e18",
-      "1536x864": "9f611e1d0f1c5d1c",
-      "1600x900": "9f601f1f135c190f",
-      "1920x1080": "9f507b1f1b144b1c"
+      "1280x800": "bf6378184c5d5d18",
+      "1366x768": "9f635c180e5d5d1c",
+      "1920x1080": "9f781f1f185e180d"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "vit.ac.in"
     ],
@@ -180,16 +168,13 @@
   {
     "id": "linkedin",
     "name": "LinkedIn",
-    "phash": "b3038d8e27c69b39",
+    "phash": "b38b238d268f6699",
     "phashByViewport": {
-      "1280x800": "b3038d8e27c69b39",
-      "1366x768": "b307898e07468fbb",
-      "1440x900": "b38f218c27ce6699",
-      "1536x864": "b389238d26cd66d9",
-      "1600x900": "b389238d268fce27",
-      "1920x1080": "b3998d338c268fcc"
+      "1280x800": "b38b238d268f6699",
+      "1366x768": "b38d238d268f6699",
+      "1920x1080": "b389238d26cd66d9"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "linkedin.com"
     ],
@@ -222,16 +207,13 @@
   {
     "id": "dropbox",
     "name": "Dropbox",
-    "phash": "a6992699669966d9",
+    "phash": "a6c90ce799669966",
     "phashByViewport": {
-      "1280x800": "a6992699669966d9",
-      "1366x768": "a6d926d906679966",
-      "1440x900": "b38c2389278d27dd",
-      "1536x864": "b3c826c98c639d67",
-      "1600x900": "b3c826c98c639d67",
-      "1920x1080": "b38c26238d278d77"
+      "1280x800": "a6c90ce799669966",
+      "1366x768": "b6c919669966d90e",
+      "1920x1080": "b38c2389268d37dd"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "dropbox.com"
     ],
@@ -267,16 +249,13 @@
   {
     "id": "idfcfirstbank",
     "name": "IDFC First Bank",
-    "phash": "b0aa8ddb86aad0d5",
+    "phash": "ba60af55bb84aad0",
     "phashByViewport": {
-      "1280x800": "b0aa8ddb86aad0d5",
-      "1366x768": "b0aa8dfd87aaa0d4",
-      "1440x900": "906a8d7f97aaa8d0",
-      "1536x864": "90aa8dfd95aaa0ea",
-      "1600x900": "9121ad5ddf42aae2",
-      "1920x1080": "b944ae55fbc4a8a8"
+      "1280x800": "ba60af55bb84aad0",
+      "1366x768": "b360af55fb84ea80",
+      "1920x1080": "90ae8debc5aa90ba"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "idfcfirst.bank.in"
     ],
@@ -312,16 +291,8 @@
   {
     "id": "paypal",
     "name": "PayPal",
-    "phash": "b38ccc3399cc6699",
-    "phashByViewport": {
-      "1280x800": "b38ccc3399cc6699",
-      "1366x768": "b398cc6699d96632",
-      "1440x900": "b38ccc6639996666",
-      "1536x864": "b398cc663399cc66",
-      "1600x900": "b398cc663399cc66",
-      "1920x1080": "b333cccc6633998c"
-    },
-    "phashThreshold": 5,
+    "phash": "f2dacae8c8d2cc31",
+    "phashThreshold": 7,
     "allowedDomains": [
       "paypal.com",
       "paypalobjects.com"

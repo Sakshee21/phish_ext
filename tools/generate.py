@@ -19,6 +19,11 @@ Two workflows:
    Escape hatch for sites whose challenge can't be passed headless: screenshot
    the page in a real browser, drop it over the capture, rehash.
 
+   `--rehash-all` recomputes `phash` and `phashByViewport` for every brand
+   from the existing captures (no browser, no network). Run it whenever the
+   hashing geometry in scripts/hash-png.ts changes — stale hashes would
+   otherwise leave Layer 1 matching nothing.
+
 Captures are taken at every viewport in config.json's `viewports` list, saved
 as tools/captures/<id>@<WxH>.png, and stored in brands.json under
 `phashByViewport` (keyed "WxH") with `phash` set from the primary viewport.
@@ -225,13 +230,13 @@ DOM_EXTRACT_JS = r"""
     'if','have','has','had','been','will','can','may','www','http','https','com',
   ]);
   const title = (document.title || '').toLowerCase();
-  const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 1500);
+  const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 3000);
   const freq = {};
   for (const w of (body + ' ' + title).match(/[a-z]{3,}/g) || []) {
     if (stopWords.has(w)) continue;
     freq[w] = (freq[w] || 0) + 1;
   }
-  const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([w]) => w);
+  const keywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([w]) => w);
 
   return { colors, keywords, title: document.title, hostname: window.location.hostname,
            fontFamily: getComputedStyle(document.body).fontFamily };
@@ -334,6 +339,61 @@ def cmd_rehash(brand_id: str, image: str | None, brand_by_id: dict, config: dict
     return 0
 
 
+def cmd_rehash_all(brand_by_id: dict, config: dict) -> int:
+    """Recompute every stored hash from the existing capture PNGs.
+
+    The hashing geometry lives in scripts/hash-png.ts, so whenever it changes
+    (e.g. the crop band), every hash in brands.json must be recomputed or
+    Layer 1 silently matches nothing. This walks tools/captures/<id>@<WxH>.png,
+    refreshes `phashByViewport` and the primary-viewport `phash`, and leaves
+    all other fields (keywords, colours, thumbnail) untouched -- no browser,
+    no network.
+    """
+    viewports = config.get("viewports") or []
+    merged = load_brands()
+    changed = 0
+
+    for brand_id, entry in merged.items():
+        vp_hashes = {}
+        for vp in viewports:
+            png_path = CAPTURES_DIR / f"{brand_id}@{viewport_key(vp)}.png"
+            if png_path.exists():
+                vp_hashes[viewport_key(vp)] = compute_phash(png_path)
+
+        # Legacy single-capture brands (e.g. added from a manual screenshot).
+        if not vp_hashes:
+            legacy = CAPTURES_DIR / f"{brand_id}.png"
+            if legacy.exists():
+                entry["phash"] = compute_phash(legacy)
+                # A single capture cannot support per-viewport hashes; drop any
+                # stale ones so brandHashes() never mixes hashing geometries.
+                entry.pop("phashByViewport", None)
+                print(f"[rehash-all] {brand_id}: phash -> {entry['phash']} (legacy capture)")
+                changed += 1
+            continue
+
+        primary_key = viewport_key(viewports[0])
+        old_phash = entry.get("phash")
+        entry["phashByViewport"] = vp_hashes
+        if primary_key in vp_hashes:
+            entry["phash"] = vp_hashes[primary_key]
+        elif vp_hashes:
+            # Primary capture missing -- fall back to the first available so
+            # `phash` always reflects the current hashing geometry.
+            entry["phash"] = next(iter(vp_hashes.values()))
+        print(f"[rehash-all] {brand_id}: {old_phash} -> {entry['phash']} "
+              f"({len(vp_hashes)} viewports)")
+        changed += 1
+
+    if not changed:
+        print("[rehash-all] no captures found under tools/captures/ — nothing to do", file=sys.stderr)
+        return 1
+
+    write_brands(merged, brand_by_id, prefix="[rehash-all]")
+    print(f"[rehash-all] {changed} brands rehashed.")
+    return 0
+
+
 def cmd_capture(config: dict, only: set[str] | None) -> int:
     viewports = config["viewports"]
     CAPTURES_DIR.mkdir(exist_ok=True)
@@ -427,10 +487,22 @@ def main() -> int:
         "capture under tools/captures/) and update brands.json. No browser is launched.",
     )
     parser.add_argument("--image", help="Image to rehash from (requires --rehash).")
+    parser.add_argument(
+        "--rehash-all",
+        action="store_true",
+        help="Recompute phash and phashByViewport for every brand from the existing "
+        "captures under tools/captures/ (no browser, no network). Use whenever the "
+        "hashing geometry in scripts/hash-png.ts changes.",
+    )
     args = parser.parse_args()
 
     config = json.loads((TOOLS_DIR / "config.json").read_text())
     brand_by_id = {b["id"]: b for b in config["brands"]}
+
+    if args.rehash_all:
+        if args.rehash or args.image or args.only:
+            parser.error("--rehash-all cannot be combined with --rehash, --image or --only")
+        return cmd_rehash_all(brand_by_id, config)
 
     if args.rehash:
         if args.only:

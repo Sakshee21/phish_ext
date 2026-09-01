@@ -6,6 +6,7 @@ import {
 } from '@/utils/condition-assignment';
 import type { InteractionEvent, InteractionEventType } from '@/utils/interaction-log';
 import { buildLogExport } from '@/utils/log-export';
+import { withGoogleToken } from '@/utils/google-auth';
 import { groupVisits, type Visit } from '@/utils/visits';
 import {
   WARNING_CONDITIONS,
@@ -33,6 +34,10 @@ const TYPE_META: Record<InteractionEventType, { label: string; color: string }> 
   // The worst outcome the study can record: credentials actually handed over
   // on a flagged page. Red, alongside 'proceeded'.
   submitted: { label: 'Submitted credentials', color: 'var(--red)' },
+  // The participant's own verdict that the warning was wrong. Not a decision
+  // about the page (that stays dismiss/proceed/go-back) -- it is feedback
+  // about the detection, and lands in the researcher's review queue.
+  reported: { label: 'Reported false positive', color: 'var(--violet)' },
   dismissed: { label: 'Dismissed', color: 'var(--slate)' },
   proceeded: { label: 'Proceeded anyway', color: 'var(--red)' },
   'went-back': { label: 'Went back', color: 'var(--ok)' },
@@ -45,6 +50,7 @@ const TYPE_ORDER: InteractionEventType[] = [
   'focused',
   'typed',
   'submitted',
+  'reported',
   'dismissed',
   'proceeded',
   'went-back',
@@ -479,7 +485,9 @@ function renderDetail(e: InteractionEvent): HTMLElement {
     const nameValue = signals.nameMatch
       ? signals.nameMatch === 'exact'
         ? 'exact match'
-        : `lookalike "${signals.lookalike?.pageWord}" ≈ "${signals.lookalike?.brandToken}"`
+        : signals.nameMatch === 'context'
+          ? 'context (brand unnamed in text)'
+          : `lookalike "${signals.lookalike?.pageWord}" ≈ "${signals.lookalike?.brandToken}"`
       : '';
     text.append(line('name match', nameValue));
     text.append(line(
@@ -679,23 +687,7 @@ shareBtn.addEventListener('click', async () => {
     shareBtn.textContent = 'Uploading…';
     setShareStatus('');
     try {
-      const first = await browser.identity.getAuthToken({ interactive: true });
-      if (!first.token) throw new Error('Google sign-in returned no token.');
-      try {
-        await attempt(first.token);
-      } catch (err) {
-        // A cached token may predate the email scope. Drop it and re-request
-        // once so the participant gets a fresh consent, then retry.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/session|invalid|token/i.test(msg)) {
-          await browser.identity.removeCachedAuthToken({ token: first.token });
-          const fresh = await browser.identity.getAuthToken({ interactive: true });
-          if (!fresh.token) throw new Error('Google sign-in returned no token.');
-          await attempt(fresh.token);
-        } else {
-          throw err;
-        }
-      }
+      await withGoogleToken(attempt);
       shareBtn.textContent = 'Uploaded ✓';
       setShareStatus('Uploaded to the study.');
     } catch (err) {

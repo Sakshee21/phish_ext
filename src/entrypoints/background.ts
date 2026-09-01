@@ -1,9 +1,10 @@
-import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement } from '@/lib/types';
+import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, ExtensionMessage, FlaggedElement, ReportResultMessage, TabStatusMessage, TabVerdict } from '@/lib/types';
 import { loadBrands } from '@/utils/brands';
 import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
 import { ensureAssigned } from '@/utils/condition-assignment';
-import { logInteraction } from '@/utils/interaction-log';
+import { logInteraction, sanitizeResult } from '@/utils/interaction-log';
+import { withGoogleToken } from '@/utils/google-auth';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
@@ -48,7 +49,7 @@ export default defineBackground(() => {
    * Returns null — never throws — on any failure so the pipeline can degrade
    * to a safe no-match. Offscreen is Chromium-only; Firefox skips Layer 1.
    */
-  async function captureAndHash(tabId: number): Promise<string | null> {
+  async function captureAndHash(tabId: number, devicePixelRatio?: number): Promise<string | null> {
     try {
       if (!browser.offscreen) {
         console.warn('[phish_ext] offscreen API unavailable — skipping Layer 1');
@@ -77,7 +78,11 @@ export default defineBackground(() => {
       const imageData = await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
 
       // The offscreen worker answers COMPUTE_PHASH with PHASH_RESULT directly.
-      const message = { type: 'COMPUTE_PHASH', imageData } satisfies ExtensionMessage;
+      const message = {
+        type: 'COMPUTE_PHASH',
+        imageData,
+        ...(devicePixelRatio != null ? { devicePixelRatio } : {}),
+      } satisfies ExtensionMessage;
       let response: unknown;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -109,6 +114,14 @@ export default defineBackground(() => {
    * match a reference taken of the same page fully rendered.
    */
   const CAPTURE_SETTLE_MS = 1200;
+
+  /**
+   * Extra wait before re-extracting DOM features when the first pull found no
+   * login form. Clone kits frequently mount their form (and brand text) via
+   * JavaScript after navigation completes; this grace period lets that render
+   * land before the text layer gives up on the page.
+   */
+  const LATE_FORM_GRACE_MS = 2500;
 
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -167,8 +180,12 @@ export default defineBackground(() => {
   interface TextMatch {
     brand: BrandReference;
     matchedKeywords: string[];
-    /** 'exact' - the brand's own name appears; 'lookalike' - a near-copy does. */
-    nameMatch: 'exact' | 'lookalike';
+    /**
+     * 'exact' - the brand's own name appears; 'lookalike' - a near-copy does;
+     * 'context' - the brand is never named, but its distinctive wording is
+     * reused and corroborated by its colour palette and typeface.
+     */
+    nameMatch: 'exact' | 'lookalike' | 'context';
     /** For a lookalike, which brand token and which page word. */
     lookalike?: { brandToken: string; pageWord: string };
   }
@@ -288,6 +305,75 @@ export default defineBackground(() => {
     return exact ?? lookalike;
   }
 
+  /**
+   * Distinctive keyword hits a context match must reach on its own: the brand
+   * is never named (its logo is an image, say), so the wording evidence has to
+   * stand without a name to point at.
+   */
+  const CONTEXT_DISTINCTIVE_MIN = 3;
+  /**
+   * Distinctive hits needed when the weaker route runs: there the keyword
+   * evidence is thinner, so the page must also wear the brand's colours and
+   * typeface before it counts.
+   */
+  const CONTEXT_DISTINCTIVE_WITH_STYLING_MIN = 2;
+  /** Keyword matches (any, not just distinctive) for the styling-backed route. */
+  const CONTEXT_KEYWORDS_WITH_STYLING_MIN = 6;
+
+  /**
+   * Identify a brand from wording + styling when the page never names it.
+   *
+   * A convincing clone often draws the brand name only inside its logo image,
+   * so `identifyBrandByText` finds nothing to match. This fallback instead
+   * asks whether the page reuses the brand's distinctive wording in volume,
+   * and, on the weaker route, backs that up with its colour palette and
+   * typeface. Distinctive keywords carry the weight because generic login
+   * vocabulary is shared by every brand in the dataset.
+   */
+  function identifyBrandByContext(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
+    // Same credential gate as the name-based path: the wording evidence must
+    // describe a page that could *take* something from the visitor. Unlike
+    // that path, a hotlinked brand asset is not enough here -- an unnamed
+    // match rests on wording alone, and an article or fan page that embeds
+    // the brand's own images could clear it.
+    if (!(features.hasCredentialField ?? features.hasLoginForm)) return null;
+
+    const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
+    const pageWords = new Set<string>([
+      ...features.pageKeywords.map((k) => k.toLowerCase()),
+      ...titleWords,
+    ]);
+
+    let best: { match: TextMatch; score: number } | null = null;
+    for (const brand of brands) {
+      const matchedKeywords = brand.keywords.filter((k) => pageWords.has(k.toLowerCase()));
+      if (matchedKeywords.length === 0) continue;
+      const distinctive = distinctiveKeywords(brand, brands);
+      const distinctiveHits = matchedKeywords.filter((k) => distinctive.has(k.toLowerCase()));
+
+      const colorsMatch = matchingColors(features.dominantColors, brand.colors).length > 0;
+      const fontMatch =
+        !!features.fontFamily?.trim() &&
+        !!brand.fontFamily?.trim() &&
+        features.fontFamily.trim().toLowerCase() === brand.fontFamily.trim().toLowerCase();
+
+      const strongEnough =
+        distinctiveHits.length >= CONTEXT_DISTINCTIVE_MIN ||
+        (distinctiveHits.length >= CONTEXT_DISTINCTIVE_WITH_STYLING_MIN &&
+          matchedKeywords.length >= CONTEXT_KEYWORDS_WITH_STYLING_MIN &&
+          colorsMatch &&
+          fontMatch);
+      if (!strongEnough) continue;
+
+      // Distinctive words are worth much more than shared login vocabulary.
+      const score = distinctiveHits.length * 2 + matchedKeywords.length;
+      if (!best || score > best.score) {
+        best = { match: { brand, matchedKeywords, nameMatch: 'context' }, score };
+      }
+    }
+    return best?.match ?? null;
+  }
+
   /** Parse "#rrggbb" into RGB, or null if it isn't a hex colour. */
   function hexToRgb(hex: string): [number, number, number] | null {
     const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -349,18 +435,42 @@ export default defineBackground(() => {
   async function runPipeline(tabId: number, url: string): Promise<DetectionResult> {
     const brands = await loadBrands();
 
+    // The first feature pull comes before the capture: the hash band is
+    // measured in CSS pixels, so Layer 1 needs the page's devicePixelRatio
+    // (reported by the content script) to convert the screenshot correctly.
+    // This pull is deliberately without the late-form grace period -- the
+    // screenshot should happen promptly after the settle wait; the retry
+    // runs further down, after the capture.
+    let features: DOMFeatures | null = await fetchDOMFeatures(tabId);
+
     // Layer 1 (visual): screenshot -> pHash -> nearest brand within threshold.
     // Viewport-dependent: only matches when the window is close in size to one
     // of the captured references.
-    const hash = await captureAndHash(tabId);
+    const hash = await captureAndHash(tabId, features?.devicePixelRatio);
     const visual = hash ? findVisualBrandMatch(hash, brands) : null;
 
     // Layer 3 (text): identify the brand from page text. Deliberately runs
     // independently of Layer 1 -- a viewport mismatch or a failed screenshot
     // must not blind the whole pipeline, which is what happens if the visual
     // match is treated as a gate.
-    const features = await fetchDOMFeatures(tabId);
-    const textual = features ? identifyBrandByText(features, brands) : null;
+    // Second chance for late-rendered credential forms: kit-built clone pages
+    // often mount their fields (and their brand text) via JavaScript after the
+    // initial extraction. If the first look found no credential field, give
+    // the page one grace period and re-extract before concluding anything. One
+    // retry only, so ordinary pages without a form don't pay the delay twice.
+    // Email-first logins (hasCredentialField) count, so they skip the wait.
+    const collectsCredentials = features
+      ? (features.hasCredentialField ?? features.hasLoginForm)
+      : false;
+    if (features && !collectsCredentials) {
+      await delay(LATE_FORM_GRACE_MS);
+      features = (await fetchDOMFeatures(tabId)) ?? features;
+    }
+    // The name-based match is preferred; the context fallback only runs when
+    // the page never names the brand in its text.
+    const textual = features
+      ? (identifyBrandByText(features, brands) ?? identifyBrandByContext(features, brands))
+      : null;
 
     const matchedBrand = visual?.brand ?? textual?.brand ?? null;
 
@@ -521,7 +631,9 @@ export default defineBackground(() => {
     if (domain.isSuspicious) {
       if (visual && textual) riskScore = 0.9;
       else if (visual) riskScore = 0.85;
-      else if (textual?.nameMatch === 'lookalike') riskScore = 0.6;
+      // Lookalike and context matches are the weaker text routes: a name one
+      // edit away, or no name at all with only wording + styling to go on.
+      else if (textual?.nameMatch === 'lookalike' || textual?.nameMatch === 'context') riskScore = 0.6;
       else riskScore = 0.7;
     }
 
@@ -569,14 +681,143 @@ export default defineBackground(() => {
         : undefined,
     };
 
-    // Hand the verdict to the content script -> warning UI.
+    // Hand the verdict to the content script -> warning UI, and remember it
+    // for this tab so the popup can offer a false-positive report while the
+    // flagged page is still on screen.
+    const visitId = generateVisitId();
+    let hostname = url;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      // Keep the raw url as hostname for non-parseable inputs.
+    }
+    await storeTabVerdict(tabId, {
+      visitId,
+      url,
+      hostname,
+      matchedBrand: matchedBrand.id,
+      riskScore,
+      isSuspicious: domain.isSuspicious,
+      condition: await ensureAssigned().catch(() => null),
+      reported: false,
+      ts: Date.now(),
+      result: sanitizeResult(result),
+    });
     browser.tabs
-      .sendMessage(tabId, { type: 'DETECTED', result } satisfies ExtensionMessage)
+      .sendMessage(tabId, { type: 'DETECTED', result, visitId } satisfies ExtensionMessage)
       .catch(() => {
         // No receiver (e.g. tabs where the content script isn't present) - ignore.
       });
 
     return result;
+  }
+
+  // ── False-positive reporting: per-tab verdict store + submission ──
+
+  /**
+   * Per-visit id for the verdict the pipeline just computed.
+   *
+   * Minted here rather than in the content script so the popup's report can
+   * reference the same visit the warning events were logged under. Same
+   * fallback shape as the content script's own generator for non-secure
+   * contexts without crypto.randomUUID.
+   */
+  function generateVisitId(): string {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+  }
+
+  /** storage.session survives MV3 service-worker restarts without persisting
+   *  past the browsing session -- right lifetime for "the page currently on
+   *  screen". Falls back to storage.local on engines without it. */
+  const verdictArea: typeof browser.storage.local =
+    (browser.storage as { session?: typeof browser.storage.local }).session ?? browser.storage.local;
+
+  const verdictKey = (tabId: number): string => `tabVerdict:${tabId}`;
+
+  async function storeTabVerdict(tabId: number, entry: TabVerdict): Promise<void> {
+    await verdictArea.set({ [verdictKey(tabId)]: entry });
+  }
+
+  async function readTabVerdict(tabId: number): Promise<TabVerdict | null> {
+    const stored = await verdictArea.get(verdictKey(tabId));
+    return (stored[verdictKey(tabId)] as TabVerdict | undefined) ?? null;
+  }
+
+  /** The submission site origin injected at build time (wxt.config.ts). */
+  const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
+
+  /**
+   * Send a false-positive report to the submission site, which verifies the
+   * Google token and stores it with status "pending" for researcher review.
+   * Throws on any failure so the caller can surface it to the popup.
+   */
+  async function submitReport(entry: TabVerdict): Promise<void> {
+    if (!submissionSite) throw new Error('Reporting is not configured.');
+    await withGoogleToken(async (token) => {
+      const res = await fetch(`${submissionSite}/api/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          url: entry.url,
+          hostname: entry.hostname,
+          matchedBrand: entry.matchedBrand,
+          riskScore: entry.riskScore,
+          signals: entry.result.signals,
+          flaggedElements: entry.result.flaggedElements,
+          condition: entry.condition,
+          visitId: entry.visitId,
+          extensionVersion: browser.runtime.getManifest().version,
+          reportedTs: Date.now(),
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Report failed.');
+    });
+  }
+
+  async function handleReportFalsePositive(tabId: number): Promise<ReportResultMessage> {
+    const entry = await readTabVerdict(tabId);
+    if (!entry) {
+      return { type: 'REPORT_RESULT', ok: false, error: 'No flagged page found for this tab.' };
+    }
+    if (entry.reported) {
+      return { type: 'REPORT_RESULT', ok: false, alreadyReported: true, error: 'Already reported.' };
+    }
+
+    // The report is a research event in its own right, and joins the visit's
+    // other events through visitId. Logged before the network call so a
+    // failed upload still leaves the signal in the participant's log.
+    if (entry.result) {
+      const fullResult: DetectionResult = {
+        riskScore: entry.riskScore,
+        matchedBrand: entry.matchedBrand,
+        flaggedElements: (entry.result.flaggedElements ?? []).map((f) => ({ ...f })),
+        reasoning: entry.result.reasoning ?? '',
+        signals: entry.result.signals,
+        comparison: undefined,
+      };
+      await logInteraction('reported', fullResult, entry.url, {
+        condition: entry.condition,
+        visitId: entry.visitId,
+      });
+    }
+
+    try {
+      await submitReport(entry);
+    } catch (err) {
+      return {
+        type: 'REPORT_RESULT',
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    await storeTabVerdict(tabId, { ...entry, reported: true });
+    return { type: 'REPORT_RESULT', ok: true };
   }
 
   // ── Listen for completed page navigation ──
@@ -660,6 +901,15 @@ export default defineBackground(() => {
       // Popup condition change → re-run the pipeline so the new warning
       // condition takes effect on the current tab without navigating away.
       void rescanActiveTab();
+    } else if (message.type === 'GET_TAB_STATUS') {
+      // The popup asking whether this tab's current page was flagged, so it
+      // can offer a false-positive report. Returning the promise resolves
+      // the popup's sendMessage.
+      return readTabVerdict(message.tabId).then(
+        (entry): TabStatusMessage => ({ type: 'TAB_STATUS', entry }),
+      );
+    } else if (message.type === 'REPORT_FALSE_POSITIVE') {
+      return handleReportFalsePositive(message.tabId);
     }
   });
 });

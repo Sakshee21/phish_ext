@@ -1,6 +1,7 @@
 // ── Brand reference dataset (per brand, generated at build time) ──
 
 import type { WarningCondition } from '@/lib/conditions';
+import type { LoggedResult } from '@/utils/interaction-log';
 
 export interface BrandReference {
   /** Brand identifier, e.g. "paypal", "google" */
@@ -92,8 +93,12 @@ export interface DetectionSignals {
   phash?: string;
   /** Hamming distance to the nearest brand reference (out of 64 bits). */
   visualDistance?: number;
-  /** How the brand was identified from page text (Layer 3). */
-  nameMatch?: 'exact' | 'lookalike';
+  /**
+   * How the brand was identified from page text (Layer 3). 'context' means
+   * the brand is never named in the page text: the match rests on distinctive
+   * wording plus colour/typeface corroboration.
+   */
+  nameMatch?: 'exact' | 'lookalike' | 'context';
   /** Brand keywords found in the page text. */
   matchedKeywords?: string[];
   /** For a lookalike name: which brand token and which page word. */
@@ -148,6 +153,13 @@ export interface DOMFeatures {
   pageKeywords: string[];
   /** Page <title> */
   title: string;
+  /**
+   * window.devicePixelRatio of the page. Layer 1 needs it to convert the
+   * captureVisibleTab screenshot (device pixels) into CSS pixels for the
+   * fixed CSS-px hash band. Chromium folds page zoom into this value, which
+   * matches what the capture actually contains.
+   */
+  devicePixelRatio?: number;
   /** Computed font-family of the page body, for comparison with the brand's. */
   fontFamily?: string;
   /** Elements a warning can highlight (logo, login form, password field). */
@@ -161,6 +173,12 @@ export interface ComputePHashMessage {
   type: 'COMPUTE_PHASH';
   /** Base64-encoded PNG screenshot data */
   imageData: string;
+  /**
+   * Ratio the screenshot was captured at (`window.devicePixelRatio`, which in
+   * Chromium also folds in browser zoom). The hash band is measured in CSS
+   * pixels, so this converts it to image pixels. Absent/invalid → treated as 1.
+   */
+  devicePixelRatio?: number;
 }
 
 export interface PHashResultMessage {
@@ -185,6 +203,12 @@ export interface LogoMatchResultMessage {
 export interface DetectedMessage {
   type: 'DETECTED';
   result: DetectionResult;
+  /**
+   * Per-visit id minted by the background when the verdict was computed. The
+   * content script attaches every interaction of this warning to it, and the
+   * popup's false-positive report references the same visit.
+   */
+  visitId: string;
 }
 
 export interface PageReadyMessage {
@@ -252,6 +276,55 @@ export interface RescanMessage {
   type: 'RESCAN';
 }
 
+// popup ↔ background (false-positive reporting)
+
+/**
+ * The active tab's last verdict, stored by the background after each
+ * pipeline run. `result` is the sanitized snapshot (no thumbnail or CSS
+ * selectors) -- exactly what a false-positive report needs to carry.
+ */
+export interface TabVerdict {
+  visitId: string;
+  url: string;
+  hostname: string;
+  matchedBrand: string | null;
+  riskScore: number;
+  /** Whether the domain layer called the page suspicious -- a warning fired. */
+  isSuspicious: boolean;
+  condition: WarningCondition | null;
+  /** Already reported from the popup: one report per visit. */
+  reported: boolean;
+  ts: number;
+  result: LoggedResult;
+}
+
+// popup → background (ask for the active tab's last verdict)
+export interface GetTabStatusMessage {
+  type: 'GET_TAB_STATUS';
+  tabId: number;
+}
+
+// background → popup (answer to GET_TAB_STATUS)
+export interface TabStatusMessage {
+  type: 'TAB_STATUS';
+  entry: TabVerdict | null;
+}
+
+// popup → background (submit a false-positive report for the active tab)
+export interface ReportFalsePositiveMessage {
+  type: 'REPORT_FALSE_POSITIVE';
+  tabId: number;
+}
+
+// background → popup (answer to REPORT_FALSE_POSITIVE)
+export interface ReportResultMessage {
+  type: 'REPORT_RESULT';
+  ok: boolean;
+  error?: string;
+  /** The visit was already reported; the UI shows the reported state. */
+  alreadyReported?: boolean;
+}
+
 export type ExtensionMessage =
   | ComputePHashMessage
   | PHashResultMessage
@@ -265,4 +338,8 @@ export type ExtensionMessage =
   | LeftPageMessage
   | SubmittedMessage
   | GoBackMessage
-  | RescanMessage;
+  | RescanMessage
+  | GetTabStatusMessage
+  | TabStatusMessage
+  | ReportFalsePositiveMessage
+  | ReportResultMessage;
