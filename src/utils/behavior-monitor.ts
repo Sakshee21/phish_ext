@@ -8,8 +8,9 @@ import type { FlaggedElement } from '@/lib/types';
  * Progressive Reveal is ONE self-contained condition with internal
  * stages -- not a fallback chain, and not the other four conditions firing in
  * sequence. A participant assigned to it never experiences banner/modal/
- * tooltip/icon as conditions; those renderers are reused as *containers*
- * inside its stages, which is invisible to the participant.
+ * tooltip/icon as conditions; its stages compose the evidence spotlight
+ * (badge -> per-evidence popover and outlines -> confirmation modal) directly,
+ * which is invisible to the participant as anything but one escalating warning.
  *
  * Every stage advances two things together, never one alone: how much
  * evidence is revealed, and how insistently it is presented.
@@ -128,7 +129,10 @@ const ENGAGEMENT_WINDOW_MS = 15_000;
  *
  * This is also the guarantee that dwell cannot race an evidence-heavy page: no
  * matter how many pieces there are, the timer alone advances only stage 1 -> 2.
- * Reaching stage 3+ always requires a fresh approach/focus/typing signal.
+ * Reaching stage 3+ requires a fresh approach/focus/typing signal -- unless
+ * signals are impossible on this page (no credential field the detector can
+ * see), in which case dwell is the only driver and `canHesitate` lets it
+ * through.
  */
 const REQUIRE_HESITATION_AFTER_FIRST_REVEAL = true;
 
@@ -174,6 +178,18 @@ export interface BehaviorMonitorOptions {
    * caller's job (they fire even when the escalation is rate-limited).
    */
   onSignal?: (signal: HesitationSignal) => void;
+  /**
+   * Whether hesitation signals are possible on this page at all -- i.e. is
+   * there a credential field the detector can see right now?
+   *
+   * Past the first reveal the ladder advances only on signals. On a page
+   * where no field is detectable (shadow-DOM inputs, a phone-number OTP
+   * login), no signal can ever fire, and without this escape hatch the ladder
+   * would dead-end at stage 2 with only the manual Next as a way forward.
+   * When the callback reports false, the dwell fallback is allowed to carry
+   * the ladder (still gated on presence, above). Defaults to true.
+   */
+  canHesitate?: () => boolean;
 }
 
 export interface BehaviorMonitor {
@@ -199,7 +215,7 @@ export interface BehaviorMonitor {
 }
 
 export function createBehaviorMonitor(options: BehaviorMonitorOptions): BehaviorMonitor {
-  const { flaggedElements, onEscalate } = options;
+  const { flaggedElements, onEscalate, canHesitate } = options;
 
   let stage: EscalationStage = FIRST_STAGE;
   let disposed = false;
@@ -240,9 +256,16 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
    */
   function signalEscalate(): void {
     const now = Date.now();
-    lastHesitationAt = now;
     if (now - lastSignalEscalation < SIGNAL_COOLDOWN_MS) return;
     lastSignalEscalation = now;
+    // Stamp ONLY when the signal actually escalates. A throttled signal still
+    // gets observed (and logged by the caller), but it must not re-arm the
+    // dwell gate below: otherwise a burst -- approach, then focus, then the
+    // first key, all inside the cooldown -- would re-arm dwell without any
+    // fresh intent, and evidence would keep marching on a ~12s cadence while
+    // the participant is merely moving the mouse. That was the "evidence
+    // fires randomly" bug.
+    lastHesitationAt = now;
     escalate();
   }
 
@@ -273,7 +296,9 @@ export function createBehaviorMonitor(options: BehaviorMonitorOptions): Behavior
     // stageEnteredAt within the same millisecond, and `<` would read that as
     // "hesitation newer than the stage" and let one free dwell-advance through.
     if (REQUIRE_HESITATION_AFTER_FIRST_REVEAL && stage > 1 && lastHesitationAt <= stageEnteredAt) {
-      return;
+      // No fresh signal -- unless signals are impossible on this page, where
+      // dwell is the only thing that can move the ladder forward at all.
+      if (!canHesitate || canHesitate()) return;
     }
     console.debug(`[phish_ext] escalating: dwell elapsed at stage ${stage}`);
     escalate();
