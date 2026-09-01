@@ -55,6 +55,24 @@ let outlineEntries: OutlineEntry[] = [];
  *  capture nothing) still act on the current stage's wiring. */
 let currentOptions: HighlightOptions | null = null;
 
+/**
+ * The current stage's full evidence list (including pieces whose element is
+ * not on screen yet), kept so the visibility watcher below can re-sync when a
+ * hidden one appears. `currentShowBlur` mirrors the last `!outlinesOnly`.
+ */
+let currentEvidence: FlaggedElement[] = [];
+let currentShowBlur = false;
+/**
+ * Watches the DOM for an evidence element that was hidden at reveal time
+ * becoming visible -- the modal-login case: a page (IDHC) keeps its credential
+ * field in a display:none modal until the participant opens it, so the field
+ * is flagged evidence but has no box until it appears. Armed only while some
+ * revealed evidence is still off screen; re-syncs (rAF-throttled) the moment
+ * the resolvable count changes, then re-evaluates whether to keep watching.
+ */
+let visibilityWatcher: MutationObserver | null = null;
+let watcherFrame = 0;
+
 const OUTLINE_ID = 'phish-ext-evidence-outlines';
 
 /**
@@ -432,6 +450,59 @@ function syncOutlines(evidence: FlaggedElement[], showBlur: boolean): void {
 }
 
 /**
+ * How many revealed pieces have a selector but no on-screen element right now
+ * -- e.g. a credential field still inside a closed modal. While this is
+ * non-zero, the DOM is watched so the outline can appear the instant it shows.
+ */
+function pendingTargetCount(evidence: FlaggedElement[]): number {
+  const withSelector = evidence.filter((f) => f.selector).length;
+  return withSelector - computeTargets(evidence).length;
+}
+
+function disarmVisibilityWatch(): void {
+  visibilityWatcher?.disconnect();
+  visibilityWatcher = null;
+  if (watcherFrame) {
+    cancelAnimationFrame(watcherFrame);
+    watcherFrame = 0;
+  }
+}
+
+/**
+ * Arm (or disarm) the watcher for the current stage's evidence. Armed only
+ * while a revealed piece is still off screen, and it re-syncs only when the
+ * resolvable count actually changes -- so a mutation-heavy page costs one rect
+ * check per animation frame, not a rebuild. Re-evaluates after each change and
+ * disconnects itself once nothing is left hidden.
+ */
+function armVisibilityWatch(): void {
+  if (pendingTargetCount(currentEvidence) === 0) {
+    disarmVisibilityWatch();
+    return;
+  }
+  if (visibilityWatcher) return;
+  visibilityWatcher = new MutationObserver(() => {
+    if (watcherFrame) return;
+    watcherFrame = requestAnimationFrame(() => {
+      watcherFrame = 0;
+      if (!outlineLayer && !activeHighlight) {
+        disarmVisibilityWatch();
+        return;
+      }
+      if (computeTargets(currentEvidence).length === outlineEntries.length) return;
+      syncOutlines(currentEvidence, currentShowBlur);
+      armVisibilityWatch();
+    });
+  });
+  visibilityWatcher.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'open'],
+  });
+}
+
+/**
  * Can we punch holes in a blur?
  *
  * Driver's overlay is an SVG whose spotlight is a hole in its *path*, and
@@ -551,6 +622,8 @@ export function clearHighlight(): void {
   tearingDownInternally = false;
   activeHighlight = null;
   currentOptions = null;
+  disarmVisibilityWatch();
+  currentEvidence = [];
   clearOutlines();
   styleElement?.remove();
   styleElement = null;
@@ -680,6 +753,12 @@ export function highlightEvidence(
   // and back on. Some evidence (the domain, reused wording) is not a thing on
   // the page, so it gets a popover but no outline -- it still has to be shown.
   syncOutlines(evidence, !outlinesOnly);
+
+  // Keep watching for a revealed-but-hidden element (a credential field in a
+  // closed modal) so its outline appears the moment the participant opens it.
+  currentEvidence = evidence;
+  currentShowBlur = !outlinesOnly;
+  armVisibilityWatch();
 
   // The confirmation stage needs no popover (the modal asks for the decision);
   // drop the driver and the blur, and let the outlines stand behind the modal.

@@ -288,13 +288,24 @@ export default defineContentScript({
 
       // Whatever field actually takes the credentials -- the password box when
       // there is one, otherwise the identifier field of a two-step login.
-      const credentialTarget = passwordField && isVisible(passwordField)
-        ? passwordField
-        : Array.from(document.querySelectorAll<HTMLElement>(CREDENTIAL_SELECTOR)).find(isVisible) ?? null;
+      //
+      // A visible field is preferred, but a hidden one is recorded rather than
+      // dropped: on a modal login (IDHC) every credential field is display:none
+      // until the participant opens the modal, and that field is the single
+      // most important thing to mark once it appears. Its selector is stable
+      // whether or not it is showing, and the outline layer re-checks
+      // visibility at render time -- it only draws a box once the element is
+      // actually on screen -- so recording a currently-hidden field cannot
+      // produce a 0x0 outline pointing at nothing.
+      const credentialCandidates = [
+        ...(passwordField ? [passwordField] : []),
+        ...Array.from(document.querySelectorAll<HTMLElement>(CREDENTIAL_SELECTOR)),
+      ];
+      const credentialTarget = credentialCandidates.find(isVisible) ?? credentialCandidates[0] ?? null;
       if (credentialTarget) {
         located.push({ selector: buildSelector(credentialTarget), kind: 'password-field' });
         const form = credentialTarget.closest<HTMLElement>('form');
-        if (form && isVisible(form)) located.push({ selector: buildSelector(form), kind: 'login-form' });
+        if (form) located.push({ selector: buildSelector(form), kind: 'login-form' });
       }
 
       located.push(...locateExternalAssets());
