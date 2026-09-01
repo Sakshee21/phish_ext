@@ -1,6 +1,6 @@
 import type { DOMFeatures, DetectedMessage, ElementLocation, ExtensionMessage } from '@/lib/types';
 import { logInteraction } from '@/utils/interaction-log';
-import { clearHighlight, hidePopover, highlightEvidence } from '@/utils/driver-highlight';
+import { clearHighlight, hidePopover, highlightEvidence, isPopoverVisible } from '@/utils/driver-highlight';
 import {
   createBehaviorMonitor,
   type BehaviorMonitor,
@@ -10,7 +10,7 @@ import {
 import { renderers, type Renderer } from '@/components/renderers';
 import { modalRenderer } from '@/components/renderers/modal';
 import { resolveCondition } from '@/utils/condition-assignment';
-import { createEngagementTracker, CREDENTIAL_SELECTOR, type EngagementTracker } from '@/utils/engagement-tracker';
+import { createEngagementTracker, credentialField, CREDENTIAL_SELECTOR, type EngagementTracker } from '@/utils/engagement-tracker';
 import type { WarningCondition } from '@/lib/conditions';
 
 export default defineContentScript({
@@ -576,13 +576,27 @@ export default defineContentScript({
         },
       });
 
+      const SKIP_RESHOW_MS = 30_000;
+      let skipReShowTimer: number | null = null;
+
       activeMonitor = createBehaviorMonitor({
         flaggedElements: result.flaggedElements,
+        // Signals are only possible when the page actually exposes a
+        // credential field the detector can see. When it does not, the monitor
+        // falls back to letting dwell carry the ladder -- otherwise such a
+        // page would dead-end at the first reveal.
+        canHesitate: () => credentialField() != null,
         onEscalate: (stage, evidence, trigger) => {
           // One container per stage: replace the previous rather than layering.
+          // The highlight layers are NOT torn down here -- highlightEvidence
+          // updates them in place, which is what keeps stage transitions from
+          // blinking the blur and outlines off and back on.
+          if (skipReShowTimer != null) {
+            clearTimeout(skipReShowTimer);
+            skipReShowTimer = null;
+          }
           activeRenderer?.destroy();
           activeRenderer = null;
-          clearHighlight();
 
           const actions = actionsForStage(stage);
           const partial = withEvidence(result, evidence, activeMonitor?.isFinalStage() ?? false);
@@ -603,14 +617,32 @@ export default defineContentScript({
           } else if (!isFinal) {
             // One more piece of evidence, marked on the page. Everything
             // already revealed stays outlined, so the picture builds up.
-            highlightEvidence(evidence, {
+            const stageOptions = {
               onNext,
               comparison: result.comparison,
               actions,
               // Clears the bubble only -- outlines stay, escalation continues,
               // and nothing is logged, because this is not a decision.
               onSkip: hidePopover,
-            });
+            };
+            highlightEvidence(evidence, stageOptions);
+
+            // Skip re-present loop: once the popover is skipped, the
+            // participant is reading the page with only the outlines showing
+            // -- and no access to the action buttons. If this stage is still
+            // current, re-present its popover after a quiet stretch so
+            // Dismiss/Go Back are never out of reach. Re-presenting the same
+            // stage advances nothing and logs nothing. The loop re-arms after
+            // its guards, so it stops the moment the visit ends or the stage
+            // moves (onEscalate clears and re-arms for the new stage) -- a
+            // dismissed warning can never be resurrected by it.
+            const rePresent = (): void => {
+              if (currentWarning?.visitId !== visitId) return;
+              if (activeMonitor?.currentStage() !== stage) return;
+              if (!isPopoverVisible()) highlightEvidence(evidence, stageOptions);
+              skipReShowTimer = window.setTimeout(rePresent, SKIP_RESHOW_MS);
+            };
+            skipReShowTimer = window.setTimeout(rePresent, SKIP_RESHOW_MS);
           } else {
             // Everything has been shown; now a decision is required. The
             // outlines stay up behind the modal so the evidence is still
