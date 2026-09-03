@@ -2,9 +2,8 @@ import type { DetectionResult, DetectionSignals, BrandReference, DOMFeatures, Ex
 import { loadBrands } from '@/utils/brands';
 import { checkDomainLegitimacy, levenshtein } from '@/utils/domain-check';
 import { hammingDistance } from '@/utils/phash';
-import { ensureAssigned } from '@/utils/condition-assignment';
+import { ensureAssigned, getParticipantId } from '@/utils/condition-assignment';
 import { logInteraction, sanitizeResult } from '@/utils/interaction-log';
-import { withGoogleToken } from '@/utils/google-auth';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
@@ -751,32 +750,32 @@ export default defineBackground(() => {
   const submissionSite = (import.meta.env as Record<string, string | undefined>).WXT_SUBMISSION_SITE ?? '';
 
   /**
-   * Send a false-positive report to the submission site, which verifies the
-   * Google token and stores it with status "pending" for researcher review.
-   * Throws on any failure so the caller can surface it to the popup.
+   * Send a false-positive report to the submission site, which stores it with
+   * status "pending" for researcher review. Anonymous: attributed by
+   * participantId only, no sign-in. Throws on any failure so the caller can
+   * surface it to the popup.
    */
   async function submitReport(entry: TabVerdict): Promise<void> {
     if (!submissionSite) throw new Error('Reporting is not configured.');
-    await withGoogleToken(async (token) => {
-      const res = await fetch(`${submissionSite}/api/report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          url: entry.url,
-          hostname: entry.hostname,
-          matchedBrand: entry.matchedBrand,
-          riskScore: entry.riskScore,
-          signals: entry.result.signals,
-          flaggedElements: entry.result.flaggedElements,
-          condition: entry.condition,
-          visitId: entry.visitId,
-          extensionVersion: browser.runtime.getManifest().version,
-          reportedTs: Date.now(),
-        }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Report failed.');
+    const res = await fetch(`${submissionSite}/api/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: entry.url,
+        hostname: entry.hostname,
+        matchedBrand: entry.matchedBrand,
+        riskScore: entry.riskScore,
+        signals: entry.result.signals,
+        flaggedElements: entry.result.flaggedElements,
+        condition: entry.condition,
+        visitId: entry.visitId,
+        participantId: await getParticipantId(),
+        extensionVersion: browser.runtime.getManifest().version,
+        reportedTs: Date.now(),
+      }),
     });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || !data.ok) throw new Error(data.error ?? 'Report failed.');
   }
 
   async function handleReportFalsePositive(tabId: number): Promise<ReportResultMessage> {
