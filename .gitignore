@@ -17,9 +17,6 @@ stuff/
 .agents/
 .claude/
 
-# Private half of the pinned extension key (public half is in wxt.config.ts).
-dev-key.pem
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

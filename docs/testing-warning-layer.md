@@ -199,11 +199,10 @@ typosquat edit distance, flagged elements, reasoning, official-vs-actual).
 **The participant-facing view beats the console.** Click **View logs** in the
 popup footer to open `/logs.html`: the full history, filterable by date range,
 event type, condition, and free-text search, with the per-install participant
-ID and assigned condition shown at the top. **Send to study** uploads the
-current (filtered) view straight to the submission site using the Google
-account via `chrome.identity` — no separate sign-in step. It requires the
-`oauth2.client_id` in `wxt.config.ts` and a non-empty submission-site origin
-(`DEV_SUBMISSION_SITE` / `PROD_SUBMISSION_SITE` in `wxt.config.ts`). **Export JSON** (from the same
+ ID and assigned condition shown at the top. **Send to study** uploads the
+ current (filtered) view straight to the submission site, anonymously with no
+ sign-in. It requires a non-empty submission-site origin
+ (`DEV_SUBMISSION_SITE` / `PROD_SUBMISSION_SITE` in `wxt.config.ts`). **Export JSON** (from the same
 page) downloads a file a researcher can import — schema v3, a `visits` array
 (nested events + derived metrics) plus participant ID, assigned condition, and
 extension version — respecting whatever filters are currently applied. A
