@@ -27,13 +27,44 @@
   ],
   "brands": [
     {
-      "id": "dummybank",
-      "name": "DummyBank",
-      "url": "http://127.0.0.1:8000/",
+      "id": "idfcfirstbank",
+      "name": "IDFC First Bank",
+      "url": "https://www.idfcfirst.bank.in/",
       "allowedDomains": [
-        "dummybank.com"
-      ],
-      "waitForSelector": "input[type=\"password\"]"
+        "idfcfirst.bank.in"
+      ]
+    },
+    {
+      "id": "kotak",
+      "name": "Kotak Bank",
+      "url": "https://netbanking.kotak.bank.in/knb2-gift/#/login",
+      "allowedDomains": [
+        "kotak.bank.in"
+      ]
+    },
+    {
+      "id": "sbi",
+      "name": "State Bank of India (SBI)",
+      "url": "https://yonoretail.sbi.bank.in/registration/welcome",
+      "allowedDomains": [
+        "onlinesbi.com", "sbi.bank.in"
+      ]
+    },
+    {
+      "id": "hdfcbank",
+      "name": "HDFC Bank",
+      "url": "https://now.hdfc.bank.in/retail-app/",
+      "allowedDomains": [
+        "hdfcbank.com", "hdfc.bank.in"
+      ]
+    },
+    {
+      "id": "vtop",
+      "name": "VTOP",
+      "url": "https://vtopcc.vit.ac.in/vtop/open/page",
+      "allowedDomains": [
+        "vit.ac.in"
+      ]
     },
     {
       "id": "github",
@@ -54,11 +85,45 @@
       ]
     },
     {
-      "id": "vtop",
-      "name": "VTOP",
-      "url": "https://vtopcc.vit.ac.in/vtop/open/page",
+      "id": "amazon",
+      "name": "Amazon",
+      "url": "https://www.amazon.in/ax/claim?arb=ac614af3-5a26-4502-af5a-bb01b3676d0e",
       "allowedDomains": [
-        "vit.ac.in"
+        "*.amazon.in"
+      ]
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal",
+      "url": "https://www.paypal.com/signin",
+      "allowedDomains": [
+        "paypal.com",
+        "paypalobjects.com"
+      ],
+      "waitForSelector": "input[type=\"email\"], input[name=\"login_email\"]"
+    },
+    {
+      "id": "phonepe",
+      "name": "PhonePe",
+      "url": "https://www.phonepe.com/pos-machine/register/",
+      "allowedDomains": [
+        "phonepe.com"
+      ]
+    },
+    {
+      "id": "axisbank",
+      "name": "Axis Bank",
+      "url": "https://www.axisbank.com/",
+      "allowedDomains": [
+        "axisbank.com"
+      ]
+    },
+    {
+      "id": "yesbank",
+      "name": "Yes Bank",
+      "url": "https://www.yesbank.in/",
+      "allowedDomains": [
+        "yesbank.in"
       ]
     },
     {
@@ -76,24 +141,6 @@
       "allowedDomains": [
         "dropbox.com"
       ]
-    },
-    {
-      "id": "idfcfirstbank",
-      "name": "IDFC First Bank",
-      "url": "https://www.idfcfirst.bank.in/",
-      "allowedDomains": [
-        "idfcfirst.bank.in"
-      ]
-    },
-    {
-      "id": "paypal",
-      "name": "PayPal",
-      "url": "https://www.paypal.com/signin",
-      "allowedDomains": [
-        "paypal.com",
-        "paypalobjects.com"
-      ],
-      "waitForSelector": "input[type=\"email\"], input[name=\"login_email\"]"
     }
   ]
 }
