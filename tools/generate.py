@@ -228,6 +228,21 @@ DOM_EXTRACT_JS = r"""
     'we','our','this','that','it','with','by','from','as','please','new','get','use',
     'using','more','all','menu','search','login','log','in','out','sign','up','not',
     'if','have','has','had','been','will','can','may','www','http','https','com',
+    // Generic login/web vocabulary pruned from brands.json: matching these
+    // says nothing about *which* brand a page imitates, and they false-flag
+    // ordinary login pages. Must stay identical to src/entrypoints/content.ts.
+    'account','accounts','password','passwords','username','user','email',
+    'cookie','cookies','continue','continuing','passkey','forgot','remember',
+    'register','registered','welcome','enter','agree','accept','skip','create',
+    'access','personal','contact','help','information','business','service',
+    'services','policy','privacy','terms','conditions','agreement','secure',
+    'secured','security','details','free','now','next','need','app','mobile',
+    'number','address','code','click','clicking','read','view','content',
+    'notice','best','always','visit','products','started','work','send',
+    'features','resources','partners','apple','google','facebook','whatsapp',
+    'microsoft','bank','banking','card','cards','credit','loans','net',
+    'kindly','html','browser','compatibility','only','without','here','set',
+    'reset','main','don','its',
   ]);
   const title = (document.title || '').toLowerCase();
   const body = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 3000);
