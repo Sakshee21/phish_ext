@@ -145,6 +145,18 @@ export interface DOMFeatures {
    * on a password field misses that entire class of phishing page.
    */
   hasCredentialField?: boolean;
+  /**
+   * The page shows an ID-first login step: a visible text input paired with a
+   * login-flavored button ("Login", "Continue", ...), but no credential field
+   * the selector recognises.
+   *
+   * Step-two logins (HDFC NetBanking asks for the Customer ID first, the
+   * password on the next screen) have no password or email box on screen yet,
+   * so `hasCredentialField` misses them entirely. This counts as collecting
+   * credentials for the identification gates only -- it never renders its own
+   * warning UI.
+   */
+  hasLoginStep?: boolean;
   /** src attributes of any <img> elements that look like logos */
   logoCandidates: string[];
   /** Dominant CSS colours extracted from the page */

@@ -275,6 +275,33 @@ export default defineContentScript({
       return null;
     }
 
+    /** Button text that marks the next step of a login flow. */
+    const LOGIN_BUTTON_HINT = /log\s?in|sign\s?in|continue|verify|next/i;
+
+    /**
+     * Is the page showing an ID-first login step?
+     *
+     * Step-two logins (HDFC NetBanking takes the Customer ID first and only
+     * asks for the password on the next screen) have no password or email
+     * box for CREDENTIAL_SELECTOR to catch -- sometimes not even an id or
+     * name on the input. What they do have is a text box next to a button
+     * that says Login/Continue. Plain links are excluded on purpose: a
+     * search box beside a "Next" pagination link is not a login step.
+     */
+    function hasLoginStep(): boolean {
+      const textBox = Array.from(
+        document.querySelectorAll<HTMLElement>('input[type="text"], input:not([type])'),
+      ).some(isVisible);
+      if (!textBox) return false;
+      return Array.from(
+        document.querySelectorAll<HTMLElement>('button, input[type="submit"], [role="button"], a.btn, .btn'),
+      )
+        .filter(isVisible)
+        .some((el) =>
+          LOGIN_BUTTON_HINT.test(el.textContent ?? el.getAttribute('value') ?? ''),
+        );
+    }
+
     /** Locate the elements a warning can point at. */
     function locateElements(passwordField: HTMLElement | null, keywords: string[]): ElementLocation[] {
       const located: ElementLocation[] = [];
@@ -338,6 +365,7 @@ export default defineContentScript({
         hasLoginForm: passwordFields.length > 0,
         passwordFieldCount: passwordFields.length,
         hasCredentialField: credentialFields.length > 0,
+        hasLoginStep: hasLoginStep(),
         logoCandidates: logo?.getAttribute('src') ? [logo.getAttribute('src')!] : [],
         dominantColors: extractColors(),
         pageKeywords: keywords,

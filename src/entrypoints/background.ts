@@ -169,6 +169,17 @@ export default defineBackground(() => {
   /** Brand keywords a lookalike name must also be backed by. */
   const FUZZY_KEYWORD_CORROBORATION = 3;
   /**
+   * Corroboration needed when the lookalike name is carried in the page
+   * title ("IDHC Second - Modern Banking").
+   *
+   * A page openly presenting itself as the brand in its title is much
+   * stronger evidence than a lookalike buried in body text, so a single
+   * corroborating keyword suffices there; body-text lookalikes keep the
+   * full three-keyword bar so near-miss words ("stop" vs "vtop") still
+   * cannot fire on their own.
+   */
+  const FUZZY_TITLE_BACKED_MIN = 1;
+  /**
    * Brand-distinctive keywords required when the brand isn't named in the
    * page title. Naming a brand once (an OAuth "Continue with GitHub" button,
    * say) is not impersonation; a page that is actually pretending to be the
@@ -209,8 +220,24 @@ export default defineBackground(() => {
     return new Set(brand.keywords.map((k) => k.toLowerCase()).filter((k) => shared.get(k) === 1));
   }
 
+  /**
+   * Whether the page takes something from the visitor: a password/email
+   * field, an ID-first login step (Customer ID now, password on the next
+   * screen), or a plain login form.
+   *
+   * This is the credential gate both identification paths share. Articles
+   * *about* a brand clear every other check but stop here, which is what
+   * keeps them unflagged.
+   */
+  function pageCollectsCredentials(features: DOMFeatures): boolean {
+    return (
+      (features.hasCredentialField ?? features.hasLoginForm) ||
+      (features.hasLoginStep ?? false)
+    );
+  }
+
   function identifyBrandByText(features: DOMFeatures, brands: BrandReference[]): TextMatch | null {
-    const collectsCredentials = features.hasCredentialField ?? features.hasLoginForm;
+    const collectsCredentials = pageCollectsCredentials(features);
 
     /**
      * Hosts this page pulls content from, for the impersonation check below.
@@ -259,15 +286,22 @@ export default defineBackground(() => {
 
       // Exact: the brand id appears, or at least two words of a multi-word
       // name do -- one generic word like "bank" isn't enough on its own.
+      // A single name token backed by several distinctive keywords also
+      // qualifies: with generic words stop-filtered, "HDFC Bank" often
+      // contributes only "hdfc" outside the title, and a brand-less <title>
+      // shouldn't hide a page whose body reuses the brand's distinctive
+      // wording at volume.
       const exactHits = nameTokens.filter((t) => pageWords.has(t));
-      if (pageWords.has(idToken) || exactHits.length >= 2) {
+      const distinctive = distinctiveKeywords(brand, brands);
+      const distinctiveHits = matchedKeywords.filter((k) => distinctive.has(k.toLowerCase()));
+      const singleTokenBacked =
+        exactHits.length >= 1 && distinctiveHits.length >= DISTINCTIVE_KEYWORD_MIN;
+      if (pageWords.has(idToken) || exactHits.length >= 2 || singleTokenBacked) {
         // Naming the brand is necessary but not sufficient: plenty of honest
         // login pages mention a brand (OAuth buttons, "powered by" notices).
         // Require either the brand in the page title -- what an impersonating
         // page almost always does -- or several of its distinctive keywords.
         const namedInTitle = titleWords.has(idToken) || nameTokens.some((t) => titleWords.has(t));
-        const distinctive = distinctiveKeywords(brand, brands);
-        const distinctiveHits = matchedKeywords.filter((k) => distinctive.has(k.toLowerCase()));
         if (!namedInTitle && distinctiveHits.length < DISTINCTIVE_KEYWORD_MIN) continue;
 
         if (!exact || matchedKeywords.length > exact.matchedKeywords.length) {
@@ -279,8 +313,9 @@ export default defineBackground(() => {
       // Lookalike: a brand token one edit from a word on the page, e.g. a page
       // calling itself "IDHC" while copying IDFC. On its own this is far too
       // weak -- a short token is one edit from plenty of ordinary words
-      // ("stop" vs "vtop") -- so it carries three guards.
-      if (matchedKeywords.length < FUZZY_KEYWORD_CORROBORATION) continue;
+      // ("stop" vs "vtop") -- so it carries guards: three corroborating
+      // keywords normally, or one when the lookalike itself is in the title.
+      if (matchedKeywords.length < FUZZY_TITLE_BACKED_MIN) continue;
       // A brand token that also appears in the brand's own keywords is a word
       // that is simply common on that page ("bank", "first"), not something
       // that identifies the brand. Only distinctive tokens are worth fuzzing.
@@ -293,6 +328,12 @@ export default defineBackground(() => {
           // Must be a near-MISS. An exact hit is the 'exact' path's business,
           // which deliberately requires two name tokens rather than one.
           if (distance < 1 || distance > NAME_FUZZ_MAX_DISTANCE) continue;
+          // Title-backed lookalikes get the lower bar; anything else needs
+          // the full corroboration count.
+          if (
+            matchedKeywords.length < FUZZY_KEYWORD_CORROBORATION
+            && !titleWords.has(pageWord)
+          ) continue;
           if (!lookalike || matchedKeywords.length > lookalike.matchedKeywords.length) {
             lookalike = { brand, matchedKeywords, nameMatch: 'lookalike', lookalike: { brandToken, pageWord } };
           }
@@ -336,7 +377,7 @@ export default defineBackground(() => {
     // that path, a hotlinked brand asset is not enough here -- an unnamed
     // match rests on wording alone, and an article or fan page that embeds
     // the brand's own images could clear it.
-    if (!(features.hasCredentialField ?? features.hasLoginForm)) return null;
+    if (!pageCollectsCredentials(features)) return null;
 
     const titleWords = new Set<string>(features.title.toLowerCase().match(/[a-z]{3,}/g) ?? []);
     const pageWords = new Set<string>([
@@ -471,9 +512,7 @@ export default defineBackground(() => {
     // the page one grace period and re-extract before concluding anything. One
     // retry only, so ordinary pages without a form don't pay the delay twice.
     // Email-first logins (hasCredentialField) count, so they skip the wait.
-    const collectsCredentials = features
-      ? (features.hasCredentialField ?? features.hasLoginForm)
-      : false;
+    const collectsCredentials = features ? pageCollectsCredentials(features) : false;
     if (features && !collectsCredentials) {
       await delay(LATE_FORM_GRACE_MS);
       features = (await fetchDOMFeatures(tabId)) ?? features;
