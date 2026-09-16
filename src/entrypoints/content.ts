@@ -11,6 +11,7 @@ import { renderers, type Renderer } from '@/components/renderers';
 import { modalRenderer } from '@/components/renderers/modal';
 import { resolveCondition } from '@/utils/condition-assignment';
 import { createEngagementTracker, credentialField, CREDENTIAL_SELECTOR, type EngagementTracker } from '@/utils/engagement-tracker';
+import { isEnabled } from '@/utils/enabled';
 import type { WarningCondition } from '@/lib/conditions';
 
 export default defineContentScript({
@@ -433,7 +434,13 @@ export default defineContentScript({
     function renderWarning(result: DetectedMessage['result'], visitId?: string): void {
       console.log('[phish_ext] Warning triggered:', result);
       if (result.riskScore > 0.5) {
-        void showWarning(result, visitId);
+        // Full off: never render while protection is disabled (e.g. a verdict
+        // computed just before the participant toggled it off).
+        void isEnabled()
+          .catch(() => true)
+          .then((enabled) => {
+            if (enabled) void showWarning(result, visitId);
+          });
       }
     }
 
@@ -458,6 +465,7 @@ export default defineContentScript({
     }
 
     async function showWarning(result: DetectedMessage['result'], backgroundVisitId?: string): Promise<void> {
+      if (!(await isEnabled().catch(() => true))) return;
       const condition = await resolveCondition();
       if (!condition) {
         // resolveCondition already logged why. Rendering anyway would produce
@@ -701,6 +709,11 @@ export default defineContentScript({
     browser.runtime.onMessage.addListener((message: ExtensionMessage) => {
       if (message.type === 'DETECTED') {
         renderWarning(message.result, message.visitId);
+      }
+      if (message.type === 'EXTENSION_DISABLED') {
+        // Protection turned off mid-visit: drop whatever warning is showing.
+        teardownWarning();
+        stopEngagement();
       }
       // Background pulls DOM features when it runs the pipeline, rather than
       // relying on the PAGE_READY push (which can race the navigation event).

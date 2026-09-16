@@ -276,6 +276,26 @@ export interface RescanMessage {
   type: 'RESCAN';
 }
 
+// popup ↔ background (enable/disable the extension for casual browsing)
+export interface GetEnabledMessage {
+  type: 'GET_ENABLED';
+}
+
+export interface EnabledStatusMessage {
+  type: 'ENABLED_STATUS';
+  enabled: boolean;
+}
+
+export interface SetEnabledMessage {
+  type: 'SET_ENABLED';
+  enabled: boolean;
+}
+
+// background → content (protection was turned off: tear down any warning UI)
+export interface ExtensionDisabledMessage {
+  type: 'EXTENSION_DISABLED';
+}
+
 // popup ↔ background (false-positive reporting)
 
 /**
@@ -339,6 +359,10 @@ export type ExtensionMessage =
   | SubmittedMessage
   | GoBackMessage
   | RescanMessage
+  | GetEnabledMessage
+  | EnabledStatusMessage
+  | SetEnabledMessage
+  | ExtensionDisabledMessage
   | GetTabStatusMessage
   | TabStatusMessage
   | ReportFalsePositiveMessage
