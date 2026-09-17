@@ -16,6 +16,7 @@
     "postinstall": "wxt prepare",
     "test:phash": "node --experimental-strip-types scripts/test-phash.ts",
     "test:visits": "node --experimental-strip-types scripts/test-visits.ts",
+    "test:blur-holes": "node --experimental-strip-types scripts/test-blur-holes.ts",
     "build:pilot:win": "wxt build --mode pilot && node scripts/sync-win.mjs"
   },
   "devDependencies": {

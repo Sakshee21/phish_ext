@@ -380,12 +380,16 @@ export default defineContentScript({
     // Renders the participant's assigned condition. The four static
     // conditions each render exactly one thing and nothing else -- assigned to
     // 'banner' means a banner, always, with no escalation and no spotlight.
-    // 'progressive' is one self-contained condition whose four stages reuse
-    // those same renderers as containers.
+    // 'progressive' is one self-contained condition whose stages compose a
+    // toolbar badge, per-evidence Driver.js popovers, and a final confirmation
+    // modal.
 
     let activeRenderer: Renderer | null = null;
     let activeMonitor: BehaviorMonitor | null = null;
     let activeEngagement: EngagementTracker | null = null;
+    let warningGeneration = 0;
+    let engagementGeneration = 0;
+    let skipReShowTimer: number | null = null;
     /**
      * The last Progressive Reveal stage this visit reached, kept after the
      * monitor is gone.
@@ -451,9 +455,14 @@ export default defineContentScript({
     }
 
     function teardownWarning(): void {
+      warningGeneration++;
       currentWarning = null;
       activeRenderer?.destroy();
       activeRenderer = null;
+      if (skipReShowTimer != null) {
+        clearTimeout(skipReShowTimer);
+        skipReShowTimer = null;
+      }
       if (activeMonitor) {
         finalStageReached = activeMonitor.currentStage();
         activeMonitor.destroy();
@@ -470,6 +479,7 @@ export default defineContentScript({
     /** Stop engagement tracking. Only when the page goes away, or a new
      *  warning replaces this one. */
     function stopEngagement(): void {
+      engagementGeneration++;
       activeEngagement?.destroy();
       activeEngagement = null;
     }
@@ -477,12 +487,19 @@ export default defineContentScript({
     function renderWarning(result: DetectedMessage['result'], visitId?: string): void {
       console.log('[phish_ext] Warning triggered:', result);
       if (result.riskScore > 0.5) {
+        teardownWarning();
+        // A new verdict supersedes the previous visit entirely. Stop its
+        // engagement tracker too, so if this one aborts (protection off, or no
+        // condition) nothing keeps logging signals for a warning that is no
+        // longer on screen. showWarning starts a fresh tracker if it renders.
+        stopEngagement();
+        const generation = warningGeneration;
         // Full off: never render while protection is disabled (e.g. a verdict
         // computed just before the participant toggled it off).
         void isEnabled()
           .catch(() => true)
           .then((enabled) => {
-            if (enabled) void showWarning(result, visitId);
+            if (enabled && generation === warningGeneration) void showWarning(result, generation, visitId);
           });
       }
     }
@@ -507,9 +524,12 @@ export default defineContentScript({
       };
     }
 
-    async function showWarning(result: DetectedMessage['result'], backgroundVisitId?: string): Promise<void> {
-      if (!(await isEnabled().catch(() => true))) return;
+    async function showWarning(result: DetectedMessage['result'], generation: number, backgroundVisitId?: string): Promise<void> {
+      if (generation !== warningGeneration) return;
+      const enabled = await isEnabled().catch(() => true);
+      if (!enabled || generation !== warningGeneration) return;
       const condition = await resolveCondition();
+      if (generation !== warningGeneration) return;
       if (!condition) {
         // resolveCondition already logged why. Rendering anyway would produce
         // an interaction we cannot attribute to a condition, which is worse
@@ -518,7 +538,6 @@ export default defineContentScript({
       }
       console.log('[phish_ext] Rendering warning (condition:', condition + ')');
 
-      teardownWarning();
       // The visit id is minted by the background when it computed the verdict,
       // so the popup's false-positive report references the same visit. The
       // local generator covers messages predating that field.
@@ -531,8 +550,10 @@ export default defineContentScript({
       // 'submitted' is sent via the background: the page starts unloading on
       // submit, so a storage write from here would not finish.
       stopEngagement();
+      const engagement = ++engagementGeneration;
       finalStageReached = null;
       activeEngagement = createEngagementTracker((signal) => {
+        if (engagement !== engagementGeneration) return;
         // While the monitor is alive its current stage wins; once it is gone,
         // fall back to the stage this visit reached. Undefined for the static
         // conditions, where neither exists.
@@ -557,17 +578,22 @@ export default defineContentScript({
         // Progressive Reveal is the only condition that also *acts* on these.
         activeMonitor?.noteHesitation(signal === 'submitted' ? 'typed' : signal);
       });
+      if (generation !== warningGeneration) return;
 
       if (condition === 'progressive') {
         await logInteraction('shown', result, window.location.href, { condition, visitId, stage: 1 });
-        startProgressiveReveal(result);
+        if (generation !== warningGeneration) return;
+        startProgressiveReveal(result, generation, visitId);
         return;
       }
 
       await logInteraction('shown', result, window.location.href, { condition, visitId });
+      if (generation !== warningGeneration) return;
       activeRenderer = renderers[condition]();
+      const isCurrentVisit = (): boolean => generation === warningGeneration && currentWarning?.visitId === visitId;
       activeRenderer.show(result, {
         onGoBack: () => {
+          if (!isCurrentVisit()) return;
           teardownWarning();
           void logInteraction('went-back', result, window.location.href, {
             condition,
@@ -577,6 +603,7 @@ export default defineContentScript({
           sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
         },
         onProceed: () => {
+          if (!isCurrentVisit()) return;
           teardownWarning();
           void logInteraction('proceeded', result, window.location.href, {
             condition,
@@ -585,6 +612,7 @@ export default defineContentScript({
           });
         },
         onDismiss: () => {
+          if (!isCurrentVisit()) return;
           teardownWarning();
           void logInteraction('dismissed', result, window.location.href, {
             condition,
@@ -600,15 +628,18 @@ export default defineContentScript({
     // like, by reusing the same renderers the static conditions use rather
     // than duplicating any rendering per stage.
 
-    function startProgressiveReveal(result: DetectedMessage['result']): void {
+    function startProgressiveReveal(result: DetectedMessage['result'], generation: number, visitId: string): void {
+      if (generation !== warningGeneration) return;
       const url = window.location.href;
-      const visitId = currentWarning?.visitId ?? generateVisitId();
+      const isCurrentStage = (stage: EscalationStage): boolean =>
+        generation === warningGeneration && activeMonitor?.currentStage() === stage;
 
       /** Terminal actions carry the stage reached -- i.e. how much evidence had
        *  been revealed when the participant acted. This is the measurement the
        *  whole condition exists to produce. */
       const actionsForStage = (stage: EscalationStage) => ({
         onGoBack: () => {
+          if (!isCurrentStage(stage)) return;
           teardownWarning();
           void logInteraction('went-back', result, url, {
             condition: 'progressive',
@@ -619,6 +650,7 @@ export default defineContentScript({
           sendToBackground({ type: 'GO_BACK' } satisfies ExtensionMessage);
         },
         onProceed: () => {
+          if (generation !== warningGeneration) return;
           teardownWarning();
           void logInteraction('proceeded', result, url, {
             condition: 'progressive',
@@ -628,6 +660,7 @@ export default defineContentScript({
           });
         },
         onDismiss: () => {
+          if (generation !== warningGeneration) return;
           teardownWarning();
           void logInteraction('dismissed', result, url, {
             condition: 'progressive',
@@ -639,7 +672,6 @@ export default defineContentScript({
       });
 
       const SKIP_RESHOW_MS = 30_000;
-      let skipReShowTimer: number | null = null;
 
       activeMonitor = createBehaviorMonitor({
         flaggedElements: result.flaggedElements,
@@ -699,8 +731,11 @@ export default defineContentScript({
             // moves (onEscalate clears and re-arms for the new stage) -- a
             // dismissed warning can never be resurrected by it.
             const rePresent = (): void => {
-              if (currentWarning?.visitId !== visitId) return;
-              if (activeMonitor?.currentStage() !== stage) return;
+              if (skipReShowTimer != null) {
+                clearTimeout(skipReShowTimer);
+                skipReShowTimer = null;
+              }
+              if (!isCurrentStage(stage)) return;
               if (!isPopoverVisible()) highlightEvidence(evidence, stageOptions);
               skipReShowTimer = window.setTimeout(rePresent, SKIP_RESHOW_MS);
             };
@@ -776,10 +811,10 @@ export default defineContentScript({
     // a storage write) with the stage reached, if progressive.
     window.addEventListener('pagehide', () => {
       const warning = currentWarning;
-      if (!warning) return;
       const stage = activeMonitor ? activeMonitor.currentStage() : undefined;
       teardownWarning();
       stopEngagement();
+      if (!warning) return;
       sendToBackground({
         type: 'LEFT_PAGE',
         result: warning.result,
