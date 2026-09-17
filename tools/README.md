@@ -31,8 +31,9 @@ tools/.venv/bin/python -m playwright install chromium
 tools/generate.sh --help
 ```
 
-If the demo server isn't running, the `dummybank` brand (which is the local
-test page) cannot be captured. Start it before any run that includes dummybank:
+The bundled `dummybank` entry came from the local `demo/` page and is **not**
+listed in `tools/config.json`, so `tools/generate.sh` won't refresh it. To
+recapture it, start the local server and add a `dummybank` entry to the config:
 
 ```bash
 cd demo && python3 -m http.server 8000 --bind 127.0.0.1
@@ -78,6 +79,9 @@ deferred until the logo-matching pipeline exists.
   "viewports": [
     { "width": 1280, "height": 800 },   // first entry = primary viewport
     { "width": 1366, "height": 768 },
+    { "width": 1440, "height": 900 },
+    { "width": 1536, "height": 864 },
+    { "width": 1600, "height": 900 },
     { "width": 1920, "height": 1080 }
   ],
   "brands": [
@@ -106,7 +110,7 @@ deferred until the logo-matching pipeline exists.
 | `maxRetries` | no | Bot-check reload retries (default 2). |
 | `retryBackoffMs` | no | Base backoff between retries, scaled per attempt (default 2000). |
 | `waitSelectorMs` | no | Timeout for `waitForSelector` (default 10000). |
-| `phashThreshold` | no | Hamming-distance threshold for a Layer-1 match (default 5). |
+| `phashThreshold` | no | Hamming-distance threshold for a Layer-1 match (default 7). Recapturing a brand overwrites its stored threshold with this default, so set it per brand to keep a custom value. |
 
 ---
 
@@ -124,7 +128,7 @@ brand you'll see lines like:
 ```
 [generate] github: capturing https://github.com/login
 [generate]   1280x800 title='Sign in to GitHub · GitHub' textLen=282 retries=0
-[generate]   phash=b333c98e6666cc98 viewports=['1280x800', '1366x768', '1920x1080'] colors=['#ffffff']
+[generate]   phash=b333c98e6666cc98 viewports=['1280x800', '1366x768', '1440x900', '1536x864', '1600x900', '1920x1080'] colors=['#ffffff']
 ```
 
 Sanity-check each brand: the title should be the real page title, `textLen`
@@ -162,7 +166,7 @@ Use this when headless capture can't get a good page — a site that stays behin
 a bot-check (e.g. Dropbox), or a capture that came out wrong:
 
 1. Open the site in a **real browser** at roughly one of the reference viewports
-   (1280x800 / 1366x768 / 1920x1080).
+   (1280x800 / 1366x768 / 1440x900 / 1536x864 / 1600x900 / 1920x1080).
 2. Screenshot the visible page (DevTools → Cmd/Ctrl+Shift+P → *Capture
    screenshot*).
 3. Re-hash that image **without launching a browser**:
@@ -209,7 +213,9 @@ a bot-check (e.g. Dropbox), or a capture that came out wrong:
   `http://127.0.0.1:8000/` for the dummybank clone) — a red warning should
   appear and log to the service-worker console. A real brand domain should not
   be flagged.
-- **Checks**: `pnpm compile` and `pnpm test:phash`.
+- **Checks**: `pnpm compile`, `pnpm test:phash`, `pnpm test:visits`, and
+  `pnpm test:blur-holes`. The warning layer's browser harness is
+  `scripts/test-highlights.py` (see its docstring).
 
 ---
 
@@ -217,12 +223,14 @@ a bot-check (e.g. Dropbox), or a capture that came out wrong:
 
 - **Viewport dependence**: `phash` is layout-dependent (see the Layer 1 note in
   `docs/architecture.md`). References are captured at 1280x800 / 1366x768 /
-  1920x1080 and Layer 1 compares against the closest one, so matches are
-  reliable when the browsing window is near one of those sizes.
+  1440x900 / 1536x864 / 1600x900 / 1920x1080 and Layer 1 compares against the
+  closest one, so matches are reliable when the browsing window is near one of
+  those sizes.
 - **Screenshots are gitignored** (`tools/captures/*`) — they're real third-party
   pages and shouldn't be committed.
 - **Colours can be empty** for some pages (transparent/very minimal styling) —
-  harmless; the runtime doesn't use colours yet.
+  harmless. Runtime DOES use colours for the `color_scheme` signal, so an empty
+  palette only means that signal is simply absent for that brand.
 - **Bot-protected sites** may stay behind a challenge or show their own
   anti-bot messaging that trips the detector (Dropbox did). If a capture looks
   wrong, use the `--rehash` workflow.

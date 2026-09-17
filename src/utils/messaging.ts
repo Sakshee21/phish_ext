@@ -8,15 +8,25 @@
  *
  *   Background ──────────────────► Offscreen
  *     COMPUTE_PHASH                    → PHASH_RESULT
- *     MATCH_LOGOS                      → LOGO_MATCH_RESULT
+ *     MATCH_LOGOS                      → LOGO_MATCH_RESULT   (stub)
  *
  *   Background ──────────────────► Content
- *     DETECTED
+ *     DETECTED                         (verdict -> warning UI)
+ *     GET_FEATURES                     → FEATURES_RESULT     (DOM pull)
+ *     EXTENSION_DISABLED               (tear down any warning)
  *
  *   Content ─────────────────────► Background
- *     PAGE_READY
+ *     PAGE_READY (vestigial)           SET_BADGE
+ *     LEFT_PAGE                        SUBMITTED
+ *     GO_BACK                          RESCAN
  *
- * All message types are defined in src/lib/types.ts.
+ *   Popup ───────────────────────► Background
+ *     RESCAN                           GET_ENABLED → ENABLED_STATUS
+ *     SET_ENABLED                      GET_TAB_STATUS → TAB_STATUS
+ *     REPORT_FALSE_POSITIVE            → REPORT_RESULT
+ *
+ * The logs page reads storage directly and needs no messaging. All message
+ * types are defined in src/lib/types.ts.
  */
 
 export type { ExtensionMessage } from '@/lib/types';

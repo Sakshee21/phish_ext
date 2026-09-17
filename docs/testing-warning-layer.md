@@ -155,14 +155,16 @@ micro-events (see §7).
 
 **Escalation is lazy, and stopping early is the intended outcome.** Someone who
 reacts at stage 1 and leaves should never see stage 2 — that's a result, not a
-failure. Escalation also pauses when the tab is hidden or idle for 10s, so an
+failure. Escalation also pauses when the tab is hidden or idle for 15s, so an
 abandoned tab doesn't march itself to a modal.
 
 ### What to check
 
 1. Select `progressive`, reload, **don't touch anything**. Toolbar badge only —
-   nothing injected into the page. After ~6s the first outline appears, then
-   one more every ~6s.
+   nothing injected into the page. After ~10s the first outline appears. Doing
+   nothing further will not walk through the rest: past that first reveal an auto
+   advance needs a fresh hesitation signal, so use **Next** (or move toward the
+   credential field) to reveal more.
 2. Click **Next** repeatedly — each click reveals one more outlined element.
 3. Move the mouse toward the password field, or click into it. Escalation
    should jump early (rate-limited to one jump per 1.5s).
@@ -181,8 +183,8 @@ browser.storage.local.get('phish_interactions').then(e => console.table(e.phish_
 ```
 
 Each event carries `type` (`shown` / `escalated` / `dismissed` / `proceeded` /
-`went-back` / `left-page`, plus the `approached` / `focused` / `typed` /
-`submitted` engagement micro-events, which are logged for **all five**
+`went-back` / `left-page` / `reported`, plus the `approached` / `focused` /
+`typed` / `submitted` engagement micro-events, which are logged for **all five**
 conditions), `condition`, a `visitId` grouping all events of one flagged
 page-load, and for Progressive Reveal the `stage` reached. The full detection snapshot (signals, flagged elements,
 reasoning, comparison) is stored **once per visit on the `shown` event**; later
@@ -252,7 +254,7 @@ Worth knowing before drawing conclusions from pilot data:
 - **Filtered exports break visit metrics.** The `complete` flag marks visits a
   filter cut short; only an unfiltered export should be used for metric-level
   analysis.
-- **Thresholds are guesses.** 6s/6s/8s and 120px are starting values, not
+- **Thresholds are guesses.** 10s/12s/15s and 120px are starting values, not
   findings. Pilot with ~8–10 people, look at the distribution of highest stage
   reached, then **freeze them**. Changing thresholds mid-study makes
   participants non-comparable, the same hazard as re-randomising assignment.

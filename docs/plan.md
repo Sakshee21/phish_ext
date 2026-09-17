@@ -27,7 +27,7 @@ The detector combines three independent checks. Each catches cases the others mi
 
 ### Layer 1 — Visual similarity (perceptual hashing)
 
-On page load, capture the visible page and generate a perceptual hash (pHash, DCT-based). Compare against a pre-built reference set of 7 real brand login pages (target ~15). A close hash match means "this looks like Brand X."
+On page load, capture the visible page and generate a perceptual hash (pHash, DCT-based). Compare against a pre-built reference set of 13 real brand login pages (14 configured in `tools/config.json`). A close hash match means "this looks like Brand X."
 
 - Catches attacker pages copied pixel-for-pixel.
 - Fast (<50 ms) and cheap.
@@ -81,13 +81,13 @@ A dataset-generation script (`tools/generate.py`) captures the brand login pages
 - Brand color palettes and keywords (extracted from the live DOM).
 - Domain allowlists and lookalike/homoglyph rules (manual, in `tools/config.json`).
 
-Output: `assets/brands/brands.json` — ~8 KB (7 brands), bundled into the extension. No runtime
+Output: `assets/brands/brands.json` — 13 brands, bundled into the extension. No runtime
 dependency on Python, OpenCV, or any server. See `tools/README.md` for usage.
 
 ### Runtime (100% in-extension)
 
 - **Background service worker** — orchestrates the pipeline. On navigation to an `http(s)` page, captures a screenshot via `tabs.captureVisibleTab` and runs the domain check (pure JS).
-- **Offscreen document** — canvas-based image processing: resize/grayscale, DCT pHash, and logo template matching. (WXT supports an `offscreen.html` entrypoint.)
+- **Offscreen document** — canvas-based image processing: resize/grayscale and DCT pHash (logo template matching is a stub). (WXT supports an `offscreen.html` entrypoint.)
 - **Content script** — extracts DOM features (login form, logo, colors, keywords), monitors user behavior once a warning is shown, and renders warnings with highlighted elements.
 - **Packaged dataset** — `assets/brands/brands.json` loaded by the workers.
 
@@ -111,13 +111,13 @@ Four static formats plus one adaptive format, evaluated against each other:
 |---|---|---|
 | 1 | **Banner** | Dismissible strip at the top of the page, non-blocking. |
 | 2 | **Modal** | Full-screen interceptor, forces an explicit choice before proceeding. |
-| 3 | **Passive Icon** | Small toolbar/badge icon change only, no interruption to the page. |
+| 3 | **Passive Icon** | Small corner badge injected bottom-right; click to expand the reasoning. No interruption to the page. |
 | 4 | **Contextual Tooltip** | Warning anchored directly to the password input field. |
 | 5 | **Progressive Reveal** | *Adaptive.* Starts with minimal evidence, reveals more of the "why this is fake" reasoning step by step based on measured hesitation; UI container escalates alongside. |
 
 ### Progressive Reveal — how it works
 
-This is the condition that differentiates the project from prior explainable-warning work (e.g. PhishXplain), which reveals its full reasoning at once regardless of whether the user is actually paying attention. Progressive Reveal's primary axis is **evidence depth**, not just interruption intensity — it starts with minimal explanation and reveals more of the "why this is fake" reasoning step by step, only escalating further if the user keeps showing signs of ignoring what's already been shown. The UI container (icon → banner+highlight → banner → modal) escalates alongside the evidence as a secondary, coupled effect, but the evidence-depth progression is the core mechanism.
+This is the condition that differentiates the project from prior explainable-warning work (e.g. PhishXplain), which reveals its full reasoning at once regardless of whether the user is actually paying attention. Progressive Reveal's primary axis is **evidence depth**, not just interruption intensity — it starts with minimal explanation and reveals more of the "why this is fake" reasoning step by step, only escalating further if the user keeps showing signs of ignoring what's already been shown. The UI container (a toolbar badge → per-evidence popovers → a final modal) escalates alongside the evidence as a secondary, coupled effect, but the evidence-depth progression is the core mechanism.
 
 **Signals tracked** (once a page is flagged and the initial minimal signal is showing):
 - Dwell time since the warning first appeared.
@@ -158,9 +158,9 @@ with how much evidence there is.
 
 A user who notices and backs away at an early stage never sees the fuller evidence or the confirmation — they were never confused enough to need it, and a terminal action halts the machine permanently. A user who keeps heading toward the password field gets progressively more explanation *and* a progressively harder-to-ignore container, in lockstep.
 
-**Implementation:** a dedicated `behavior-monitor.ts` utility (see Project Structure below) owns the hesitation-tracking and the state machine, and calls back with each stage's evidence slice so the caller can render it, parameterized by how much of the `flaggedElements`/`reasoning` payload to reveal at that stage. Progressive Reveal *composes* the static renderers and the detection pipeline's evidence data rather than duplicating either.
+**Implementation:** a dedicated `behavior-monitor.ts` utility (see Project Structure below) owns the hesitation-tracking and the state machine, and calls back with each stage's evidence slice so the caller can render it, parameterized by how much of the `flaggedElements`/`reasoning` payload to reveal at that stage. Progressive Reveal *composes* the on-page evidence spotlight and the final confirmation modal with the detection pipeline's evidence data rather than duplicating either.
 
-**Logging:** identical to the other four conditions (`shown` / `dismissed` / `proceeded` / `went-back`), plus the specific stage reached (i.e. how much evidence the user had been shown) at the time of the final action. This is the data point that lets the evaluation study ask not just "did the warning work" but "how much explanation did it actually take before the user reacted."
+**Logging:** shares the common events (`shown` / `dismissed` / `proceeded` / `went-back` / `submitted` plus the `approached` / `focused` / `typed` micro-events), and adds `escalated` carrying the specific stage reached (i.e. how much evidence the user had been shown) at the time of the final action. This is the data point that lets the evaluation study ask not just "did the warning work" but "how much explanation did it actually take before the user reacted."
 
 ## Project Structure
 
@@ -189,7 +189,7 @@ phish_ext/
       visits.ts              # group events into visits + derive study metrics
     assets/brands/           # bundled reference dataset (generated by tools/)
     components/
-      renderers/             # warning renderers: banner, modal, tooltip, icon (banner/modal/icon reused by Progressive Reveal)
+      renderers/             # warning renderers: banner, modal, tooltip, icon (Progressive Reveal composes the Driver popover + final modal)
 ```
 
 ## Stretch Goal
@@ -207,15 +207,15 @@ CLIP-style embedding comparison (via `onnxruntime-web`, fully local) for recogni
    - Layer 3 (DOM localization) — text/DOM signals wired into the verdict;
      canvas logo template matching still pending (`MATCH_LOGOS` stub).
 4. [done] Write the build-time dataset generator in `tools/` (Playwright capture
-   at three viewports, hashes via the exact runtime `phash.ts`). Dataset currently
-   has 7 brands against a ~15 target.
+   at six viewports, hashes via the exact runtime `phash.ts`). Dataset currently
+   has 13 brands (14 configured).
 5. [done] Build the four static warning renderers (banner, modal, tooltip, icon)
    with element highlighting + condition switching (popup selector,
-   `storage.local['phish_condition']`).
+   `storage.local['phish_condition_assignment']`).
 6. [done] Build `behavior-monitor.ts` and wire up Progressive Reveal —
    hesitation tracking (dwell timer + cursor proximity to the credential field
-   + focus/typing signals) and the icon → banner+highlight → banner → modal
-   escalation state machine, reusing the renderers from step 5. Logs `escalated`
+   + focus/typing signals) and the toolbar badge → per-evidence Driver popover →
+   final modal escalation, composing the renderers from step 5. Logs `escalated`
    events with the stage reached.
 7. [done] Add interaction logging across all five conditions (`shown` / `dismissed` /
    `proceeded` / `went-back` / `left-page`, plus escalation stage + auto/manual
