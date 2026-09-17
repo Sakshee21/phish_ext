@@ -51,8 +51,9 @@
  *
  * ## Comparison
  *
- * Use `hammingDistance()` between two hashes. A distance <= 5 (out of 64
- * bits) indicates the images are perceptually very similar (potential clone).
+ * Use `hammingDistance()` between two hashes. A distance <= 7 (out of 64
+ * bits) indicates the images are perceptually very similar (potential clone);
+ * the shipped threshold is `phashThreshold` in brands.json.
  */
 
 // ── Types ──

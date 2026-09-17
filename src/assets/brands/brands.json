@@ -44,7 +44,7 @@
       "1600x900": "b9c9c6393b683934",
       "1920x1080": "b9c6c63be039c6c2"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "kotak.bank.in"
     ],
@@ -84,7 +84,7 @@
       "1600x900": "97e970cd31e01f52",
       "1920x1080": "96ed53ed11423d52"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "onlinesbi.com",
       "sbi.bank.in"
@@ -126,7 +126,7 @@
       "1600x900": "b935b525944b9696",
       "1920x1080": "964c69b7c1969669"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "hdfcbank.com",
       "hdfc.bank.in"
@@ -271,7 +271,7 @@
       "1600x900": "b333cccc8c6666cc",
       "1920x1080": "b333cccc8c6666cc"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "*.amazon.in"
     ],
@@ -336,7 +336,7 @@
       "1536x864": "ea9795c19364966a",
       "1920x1080": "ed9296c99364926d"
     },
-    "phashThreshold": 5,
+    "phashThreshold": 7,
     "allowedDomains": [
       "phonepe.com"
     ],

@@ -52,7 +52,7 @@ HASH_SCRIPT = ROOT_DIR / "scripts" / "hash-png.ts"
 BRANDS_FILE = ROOT_DIR / "src" / "assets" / "brands" / "brands.json"
 CAPTURES_DIR = TOOLS_DIR / "captures"
 
-PHASH_THRESHOLD = 5
+PHASH_THRESHOLD = 7
 
 # Reference thumbnail: a small picture of the *real* brand page, bundled so the
 # warning can show it beside the suspicious page. Detection makes no network

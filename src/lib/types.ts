@@ -13,7 +13,7 @@ export interface BrandReference {
   /** Optional pHash per capture viewport, keyed e.g. "1280x800". Layer 1
    *  compares against the closest viewport to tolerate window-size drift. */
   phashByViewport?: Record<string, string>;
-  /** Hamming-distance threshold for a "close" match (<= 5 for pHash) */
+  /** Hamming-distance threshold for a "close" match (<= 7 for pHash) */
   phashThreshold: number;
   /** List of legitimate domains (e.g. ["paypal.com", "paypalobjects.com"]) */
   allowedDomains: string[];

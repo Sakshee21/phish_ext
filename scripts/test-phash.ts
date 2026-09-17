@@ -8,11 +8,10 @@
  *    that doesn't depend on any files being present.
  *
  * 2. Real-image validation — reads actual PNG screenshots from
- *    `test-images/` (see filenames below) via `pngjs`, so the <=5 threshold
- *    mentioned in docs/architecture.md gets checked against real capture
- *    noise (antialiasing, compression, font rendering) instead of a
- *    synthetic noise model. Skipped with instructions if the files aren't
- *    there yet.
+ *    `test-images/` (see filenames below) via `pngjs`, so the <=7 threshold
+ *    shipped in `brands.json` gets checked against real capture noise
+ *    (antialiasing, compression, font rendering) instead of a synthetic
+ *    noise model. Skipped with instructions if the files aren't there yet.
  *
  * Run (Node >= 22.6, uses the built-in TypeScript stripping flag):
  *   node --experimental-strip-types scripts/test-phash.ts
@@ -150,16 +149,16 @@ function runRealImageCheck(): boolean | null {
   console.log('hash same-2.png:   ', hashSame2);
   console.log('hash different.png:', hashDifferent);
   console.log();
-  logResult('same-1, same-2  ', distSame, 'two captures of the same page — this validates the <=5 threshold');
+  logResult('same-1, same-2  ', distSame, 'two captures of the same page — this validates the <=7 threshold');
   logResult('same-1, different', distDifferent, 'expect clearly larger than the same-page distance');
   console.log();
 
   const pass = distDifferent > distSame;
-  if (pass && distSame <= 5) {
-    console.log('✅ PASS — same-page distance is within the docs/architecture.md <=5 threshold\n');
+  if (pass && distSame <= 7) {
+    console.log('✅ PASS — same-page distance is within the <=7 threshold\n');
   } else if (pass) {
     console.log(
-      `⚠️  Same-page distance (${distSame}) is above the docs/architecture.md <=5 threshold, but still ` +
+      `⚠️  Same-page distance (${distSame}) is above the <=7 threshold, but still ` +
         `clearly closer than the different-page distance (${distDifferent}). The threshold may need to be ` +
         'loosened once real brand screenshots are in play — that is exactly what this check is for.\n',
     );

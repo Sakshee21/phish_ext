@@ -12,7 +12,7 @@ screenshots of real third-party sites, not something to commit.
 | Filename | What to put in it |
 |---|---|
 | `same-1.png` | A screenshot of any real login/landing page. |
-| `same-2.png` | A **second, independently captured** screenshot of the *same* page — reload and recapture, or capture a few seconds apart. Don't just duplicate `same-1.png`; the point is to include the natural noise between two real captures (font antialiasing, ad/banner timing, subpixel rendering differences), which is exactly the noise the `<= 5` Hamming-distance threshold in `docs/architecture.md` needs to be robust to. |
+| `same-2.png` | A **second, independently captured** screenshot of the *same* page — reload and recapture, or capture a few seconds apart. Don't just duplicate `same-1.png`; the point is to include the natural noise between two real captures (font antialiasing, ad/banner timing, subpixel rendering differences), which is exactly the noise the `<= 7` Hamming-distance threshold (`brands.json` / `src/utils/phash.ts`) needs to be robust to. |
 | `different.png` | A screenshot of a **genuinely different** site — any other page works, doesn't need to be a login page. |
 
 ## How to capture them
