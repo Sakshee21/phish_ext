@@ -15,6 +15,13 @@
           <span id="status-label">Idle</span>
         </div>
       </header>
+      <section id="toggle">
+        <span id="toggle-label">Scanning</span>
+        <label class="switch">
+          <input type="checkbox" id="enabled-toggle" checked />
+          <span class="slider"></span>
+        </label>
+      </section>
       <section id="stats">
         <div class="stat">
           <span class="stat-label">Scans</span>
@@ -40,7 +47,7 @@
       </section>
       <footer>
         <button id="open-logs" type="button">View logs</button>
-        <small id="version">v0.0.1</small>
+        <small id="version">v0.0.5</small>
       </footer>
     </div>
     <script type="module" src="./main.ts"></script>

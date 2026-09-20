@@ -2,7 +2,7 @@
   "name": "phish_ext",
   "description": "Browser extension that detects brand-impersonation phishing pages",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.5",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -16,6 +16,7 @@
     "postinstall": "wxt prepare",
     "test:phash": "node --experimental-strip-types scripts/test-phash.ts",
     "test:visits": "node --experimental-strip-types scripts/test-visits.ts",
+    "test:blur-holes": "node --experimental-strip-types scripts/test-blur-holes.ts",
     "build:pilot:win": "wxt build --mode pilot && node scripts/sync-win.mjs"
   },
   "devDependencies": {

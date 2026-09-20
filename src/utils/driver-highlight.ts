@@ -9,9 +9,10 @@ import driverCss from 'driver.js/dist/driver.css?inline';
 
 import type { BrandComparison, FlaggedElement } from '@/lib/types';
 import type { WarningActions } from '@/components/renderers/types';
+import { mergeHoles, type Hole } from '@/utils/blur-holes';
 
 /**
- * Driver.js adapter for Progressive Reveal's stage 2 container.
+ * Driver.js adapter for Progressive Reveal's on-page evidence stages.
  *
  * Used *only* by Progressive Reveal. The four static conditions each show
  * exactly one thing and never a spotlight -- a participant assigned to
@@ -40,14 +41,20 @@ let styleElement: HTMLStyleElement | null = null;
 let outlineLayer: HTMLElement | null = null;
 let blurLayer: HTMLElement | null = null;
 /**
- * The evidence currently outlined, in reveal order. Stages only ever append
- * to this (the ladder reveals a growing prefix of the same list), so a stage
- * transition adds boxes instead of rebuilding the layer -- which is what
- * keeps the blur mask from blinking off and back on between stages.
+ * The evidence currently outlined, in reveal order, one entry per piece of
+ * evidence that carries a selector. The ladder only ever appends, so an entry
+ * (and its box, and its number) is created once and then updated in place --
+ * a stage transition adds boxes instead of rebuilding the layer, which is what
+ * keeps the blur mask from blinking off and back on.
+ *
+ * `el` is null whenever the element is not resolvable right now (removed, or
+ * hidden inside a closed panel). The entry stays -- only `place()` hides the
+ * box -- so a temporarily unmeasurable element neither loses its number nor
+ * renumbers the others.
  */
 interface OutlineEntry {
   flagged: FlaggedElement;
-  el: HTMLElement;
+  el: HTMLElement | null;
   box: HTMLElement;
 }
 let outlineEntries: OutlineEntry[] = [];
@@ -63,12 +70,18 @@ let currentOptions: HighlightOptions | null = null;
 let currentEvidence: FlaggedElement[] = [];
 let currentShowBlur = false;
 /**
- * Watches the DOM for an evidence element that was hidden at reveal time
- * becoming visible -- the modal-login case: a page (IDHC) keeps its credential
- * field in a display:none modal until the participant opens it, so the field
- * is flagged evidence but has no box until it appears. Armed only while some
- * revealed evidence is still off screen; re-syncs (rAF-throttled) the moment
- * the resolvable count changes, then re-evaluates whether to keep watching.
+ * The element Driver's popover is currently anchored to (null = unanchored).
+ * Kept so a reconciliation that changes the newest evidence's anchor can
+ * re-issue the step: `refresh()` only re-renders the element Driver already
+ * holds, so it cannot move the popover off a removed element or onto a
+ * newly-visible one.
+ */
+let lastNewestAnchor: HTMLElement | null = null;
+/**
+ * Watches the DOM while a warning is up, so evidence that was hidden at
+ * reveal time (a credential field in a closed modal) anchors the moment it
+ * becomes visible, and evidence that dropped out is withdrawn instead of
+ * leaving a box pointing at nothing.
  */
 let visibilityWatcher: MutationObserver | null = null;
 let watcherFrame = 0;
@@ -90,20 +103,76 @@ const BLUR_Z = 999_999_998;
  * evidence becomes the subject of the screen, but not so much that the page
  * is unreadable -- the participant still has to be able to weigh the page and
  * decide, and a warning that removes the choice measures nothing.
- *
- * Also kept small because the layer is a full-viewport backdrop-filter whose
- * mask is repainted on every scroll frame: the larger the radius, the heavier
- * that continuous re-rasterization gets, which reads as jank.
  */
 const BLUR_PX = 2;
-
-/** Breathing room around each unblurred hole. */
-const HOLE_PAD = 6;
 
 /** 3px of breathing room on every side of an outline box, hence +6 on each dimension. */
 const PAD = 3;
 
-/** Styling for our popover additions, appended to Driver.js's own stylesheet. */
+/** Breathing room around each unblurred hole in the frost mask. */
+const HOLE_PAD = 6;
+
+/** The id the selector was built from, if any (used to guard re-binding). */
+function selectorId(selector: string): string | null {
+  const match = selector.match(/#([\w-]+)/);
+  return match ? match[1]! : null;
+}
+
+/** The element is attached to the document and renders a usable box. */
+function isRendered(el: Element): boolean {
+  if (!el.isConnected) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width >= 2 && rect.height >= 2;
+}
+
+/**
+ * Hidden by its own or an ancestor's style: display:none / visibility:hidden
+ * or collapse / opacity:0 / content-visibility:hidden -- a closed modal, a
+ * collapsed panel. Distinct from merely scrolled out of the viewport (see
+ * isOnScreen).
+ */
+function isStyleVisible(el: HTMLElement): boolean {
+  let node: HTMLElement | null = el;
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node);
+    if (
+      style.display === 'none'
+      || style.visibility === 'hidden'
+      || style.visibility === 'collapse'
+      || style.contentVisibility === 'hidden'
+      || Number(style.opacity) === 0
+    ) {
+      return false;
+    }
+    node = node.parentElement;
+  }
+  return true;
+}
+
+/** Style-visible and intersecting the viewport -- what `place()` draws. */
+function isOnScreen(el: HTMLElement): boolean {
+  if (!isRendered(el) || !isStyleVisible(el)) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.bottom > 0 && rect.top < window.innerHeight
+    && rect.right > 0 && rect.left < window.innerWidth;
+}
+
+/**
+ * Nodes this module (or Driver.js) injected into the page. They must never be
+ * returned by a re-query of a page selector: a structural selector like
+ * `body > div > div:nth-of-type(1)` would otherwise also match our outline
+ * layer, its boxes, Driver's popover, or the dummy anchor element -- inflating
+ * the match count and making the real element unresolvable.
+ */
+function isExtensionOwned(el: Element): boolean {
+  if (el.id === OUTLINE_ID || el.id === 'driver-dummy-element') return true;
+  if (el.hasAttribute('data-phish-ext')) return true;
+  return el.closest(`#${OUTLINE_ID}, .driver-popover, .driver-overlay`) !== null;
+}
+
+/**
+ * Styling for our popover additions, appended to Driver.js's own stylesheet.
+ */
 const EXTRA_CSS = `
 /* Driver.js resets only the popover wrapper (all:unset); its children inherit
    whatever the host page declares. On a dark-themed site that paints the
@@ -228,25 +297,32 @@ const EXTRA_CSS = `
 `;
 
 /**
- * The evidence currently marked, resolved to live elements.
+ * The element currently standing in for a piece of evidence, or null.
  *
- * Elements flagged without a selector (the domain, the typeface) are not
- * things on the page, so they get a popover but no outline -- they still have
- * to be shown. Elements whose selector no longer resolves or that render 0x0
- * (a collapsed login panel) are skipped rather than marked as an invisible box
- * pointing at nothing.
+ * Retention: a bound node is kept for as long as it stays in the document,
+ * even while it is hidden -- an nth-selector shift elsewhere cannot move the
+ * anchor, and a temporarily hidden element (a closed panel) keeps its slot so
+ * its box reappears in place. Box visibility is `place()`'s business, not
+ * this function's.
+ *
+ * Only a disconnected node is re-queried. The query ignores our own injected
+ * nodes and must still resolve to exactly one element that is tag-compatible
+ * and shares the selector's id (when it has one); otherwise the evidence stays
+ * unanchored rather than pointing at a guess.
  */
-function computeTargets(evidence: FlaggedElement[]): Array<{ flagged: FlaggedElement; el: HTMLElement }> {
-  return evidence
-    .filter((f) => f.selector)
-    .map((f) => ({ flagged: f, el: document.querySelector<HTMLElement>(f.selector!) }))
-    .filter((t): t is { flagged: FlaggedElement; el: HTMLElement } => {
-      if (!t?.el) return false;
-      // A hidden element (a collapsed login panel, say) would draw a 0x0 box
-      // pointing at nothing. Skip rather than mark something invisible.
-      const rect = t.el.getBoundingClientRect();
-      return rect.width >= 2 && rect.height >= 2;
-    });
+function resolveElement(flagged: FlaggedElement, retained: HTMLElement | null): HTMLElement | null {
+  const selector = flagged.selector;
+  if (!selector) return null;
+  const id = selectorId(selector);
+  if (retained?.isConnected && (!id || retained.id === id)) return retained;
+  const matched = Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .filter((el) => !isExtensionOwned(el));
+  if (matched.length !== 1) return null;
+  const candidate = matched[0]!;
+  const tagOk = retained ? candidate.tagName === retained.tagName : true;
+  const idOk = !id || candidate.id === id;
+  if (!tagOk || !idOk) return null;
+  return candidate;
 }
 
 function makeBox(flagged: FlaggedElement, position: number): HTMLElement {
@@ -256,8 +332,7 @@ function makeBox(flagged: FlaggedElement, position: number): HTMLElement {
     // the outline renders 4px wider than the element it is framing.
     'position:absolute;box-sizing:border-box;border:3px solid #b3261e;border-radius:7px;'
     + 'background:rgba(179,38,30,0.08);'
-    + 'box-shadow:0 0 0 3px rgba(179,38,30,0.18), 0 2px 10px rgba(0,0,0,0.12);'
-    + 'transition:left .15s ease, top .15s ease, width .15s ease, height .15s ease;';
+    + 'box-shadow:0 0 0 3px rgba(179,38,30,0.18), 0 2px 10px rgba(0,0,0,0.12);';
   const label = document.createElement('div');
   label.textContent = `${position + 1}. ${flagged.title ?? flagged.element}`;
   label.style.cssText =
@@ -272,21 +347,21 @@ function makeBox(flagged: FlaggedElement, position: number): HTMLElement {
 
 /**
  * Repaint the outlines so they track their elements, and re-cut the blur's
- * holes to match. Runs on every append and on every scroll/resize frame.
+ * holes to match. Runs on every append and on every geometry frame.
  */
 function place(): void {
   if (!outlineLayer) return;
   const holes: Hole[] = [];
   outlineEntries.forEach(({ el, box }) => {
+    if (!el || !isOnScreen(el)) {
+      // No resolvable element (removed, or hidden inside a closed panel) or
+      // scrolled out of view: hide the box but keep the entry, so it reappears
+      // in place without a fresh DOM mutation and without renumbering.
+      box.style.display = 'none';
+      return;
+    }
     const rect = el.getBoundingClientRect();
-    // An element scrolled out of view (or collapsed since capture) should
-    // not leave a stray box floating at the edge of the screen.
-    const offscreen =
-      rect.width < 2 || rect.height < 2
-      || rect.bottom < 0 || rect.top > window.innerHeight
-      || rect.right < 0 || rect.left > window.innerWidth;
-    box.style.display = offscreen ? 'none' : 'block';
-    if (offscreen) return;
+    box.style.display = 'block';
     box.style.left = `${rect.left - PAD}px`;
     box.style.top = `${rect.top - PAD}px`;
     box.style.width = `${rect.width + PAD * 2}px`;
@@ -296,10 +371,309 @@ function place(): void {
     // and blurring what they have already been shown would undo that.
     holes.push({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
   });
-  // While the frost is suspended (a scroll gesture in progress) the mask is
-  // not on screen -- skip the style writes and re-cut the holes once, on
-  // resume.
   if (blurLayer && !blurSuspended) paintBlurHoles(holes);
+}
+
+// ── Geometry sources ──
+// Position can change without a window resize: page scroll (capturing
+// listener), visualViewport offset/scale (pinch-zoom), and the element's own
+// box (ResizeObserver), plus pages that move things with transforms -- which
+// fire no event at all and need a bounded geometry poll.
+
+let frame = 0;
+let pollTimer: number | null = null;
+let visualViewportApi: VisualViewport | null = null;
+let lastGeometry: string = '';
+let pollBudget = 0;
+
+/**
+ * An element resized (content loaded, font swapped in, a style transition on
+ * width/height) fires no scroll event; ResizeObserver catches it directly.
+ * A single observer instance is re-pointed at the current element of each
+ * outline entry, and disconnected on teardown.
+ */
+const resizeObserver = new ResizeObserver(() => {
+  placeIfChanged();
+  // A size change fires no scroll/resize event, so Driver's own repositioning
+  // never runs for it -- refresh the spotlight/popover to match the new box.
+  activeHighlight?.refresh();
+});
+
+function schedulePlace(): void {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    place();
+  });
+}
+
+/** Hash of everything that determines where the outlines should be. */
+function geometryKey(): string {
+  const parts = outlineEntries.map(({ el }) => {
+    if (!el || !el.isConnected) return 'x';
+    const r = el.getBoundingClientRect();
+    return `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+  });
+  return `${parts.join('|')};${window.innerWidth}x${window.innerHeight}`;
+}
+
+function placeIfChanged(): void {
+  const key = geometryKey();
+  if (key === lastGeometry) return;
+  lastGeometry = key;
+  schedulePlace();
+}
+
+function clearPoll(): void {
+  if (pollTimer != null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+/**
+ * Short-lived geometry poll for position-only changes that fire no event
+ * (CSS transform animations). It stops as soon as the geometry has been
+ * stable for a few consecutive samples, so a resting page pays a few checks
+ * and then nothing; only pages actively animating keep it alive, at most one
+ * rect read per sample.
+ *
+ * Idempotent: a reconcile that re-arms it must not reset the budget, or a
+ * busy page would restart the window before it ever sampled once.
+ */
+function startPoll(): void {
+  if (pollTimer != null) return;
+  pollBudget = 0;
+  pollTimer = window.setInterval(() => {
+    placeIfChanged();
+    if (frame) return;
+    pollBudget++;
+    if (pollBudget >= 8) {
+      clearPoll();
+    }
+  }, 200);
+}
+
+function startListening(): void {
+  if (listening) return;
+  listening = true;
+  window.addEventListener('scroll', onReposition, true);
+  window.addEventListener('resize', onReposition);
+  visualViewportApi = window.visualViewport ?? null;
+  visualViewportApi?.addEventListener('resize', onReposition);
+  visualViewportApi?.addEventListener('scroll', onReposition);
+}
+
+function stopListening(): void {
+  if (!listening) return;
+  listening = false;
+  window.removeEventListener('scroll', onReposition, true);
+  window.removeEventListener('resize', onReposition);
+  visualViewportApi?.removeEventListener('resize', onReposition);
+  visualViewportApi?.removeEventListener('scroll', onReposition);
+  visualViewportApi = null;
+}
+
+const onReposition = (): void => {
+  // Driver's own resize handler rAF-coalesces too; a scroll gesture suspends
+  // the frost and schedules its restoration instead of paying a whole-page
+  // re-filter on every frame.
+  suspendBlurForScroll();
+  scheduleBlurResume();
+  placeIfChanged();
+};
+
+let listening = false;
+
+function ensureOutlineLayer(): void {
+  if (outlineLayer) return;
+  outlineLayer = document.createElement('div');
+  outlineLayer.id = OUTLINE_ID;
+  outlineLayer.style.cssText =
+    `position:fixed;inset:0;pointer-events:none;z-index:${OUTLINE_Z};`;
+  document.body.append(outlineLayer);
+  startListening();
+}
+
+/** The blur goes in underneath the outlines. Its holes are cut in `place()`,
+ *  so it never renders as a full-page blur even for one frame. */
+function ensureBlurLayer(): void {
+  if (blurLayer || !canBlur()) return;
+  blurLayer = document.createElement('div');
+  blurLayer.dataset.phishExt = 'frost';
+  blurLayer.style.cssText =
+    `position:fixed;inset:0;pointer-events:none;z-index:${BLUR_Z};`
+    + `backdrop-filter:blur(${BLUR_PX}px);-webkit-backdrop-filter:blur(${BLUR_PX}px);`;
+  document.body.append(blurLayer);
+}
+
+/** Remove the blur but keep the outlines: the page returns to a readable
+ *  state while everything revealed so far stays marked. Also cancels any
+ *  pending scroll-gesture restoration -- without this, a timer scheduled just
+ *  before a Skip could resurrect the layer afterwards. */
+function removeBlur(): void {
+  if (blurResumeTimer != null) {
+    clearTimeout(blurResumeTimer);
+    blurResumeTimer = null;
+  }
+  blurSuspended = false;
+  blurLayer?.remove();
+  blurLayer = null;
+}
+
+/**
+ * Bring the outline layer in line with the evidence revealed so far.
+ *
+ * Stages only ever *append* (the ladder reveals a growing prefix of the same
+ * list), so this reuses each existing box and only creates one for newly
+ * revealed evidence. An element that is momentarily unmeasurable (mid-
+ * transition, or hidden inside a closed panel) does NOT drop its box or
+ * renumber the others: the entry is kept with `el = null` and `place()` hides
+ * it until it resolves again. Numbering is assigned once, at creation.
+ */
+function syncEntries(evidence: FlaggedElement[], showBlur: boolean): void {
+  const withSelectors = evidence.filter((f) => f.selector);
+
+  // The ladder only grows, so existing entries should line up one-to-one with
+  // the prefix of the new list. If they do not (a fresh warning reusing this
+  // module without a teardown), start from a clean layer.
+  const aligned = outlineEntries.every((entry, i) => withSelectors[i] === entry.flagged);
+  if (!aligned) clearOutlines();
+
+  if (withSelectors.length === 0) {
+    if (showBlur) removeBlur();
+    return;
+  }
+
+  ensureOutlineLayer();
+  // The previously newest piece stops pulsing; only the newest one animates.
+  if (outlineEntries.length > 0) {
+    outlineEntries[outlineEntries.length - 1]!.box.classList.remove('phish-outline-newest');
+  }
+
+  let changed = false;
+  // New evidence: create its box once, numbered by its stable slot.
+  for (let i = outlineEntries.length; i < withSelectors.length; i++) {
+    const flagged = withSelectors[i]!;
+    const el = resolveElement(flagged, null);
+    const box = makeBox(flagged, i);
+    outlineLayer!.append(box);
+    outlineEntries.push({ flagged, el, box });
+    if (el) resizeObserver.observe(el);
+    changed = true;
+  }
+  // Existing evidence: re-resolve in case an element appeared or went away.
+  for (const entry of outlineEntries) {
+    const el = resolveElement(entry.flagged, entry.el);
+    if (el === entry.el) continue;
+    if (entry.el) resizeObserver.unobserve(entry.el);
+    if (el) resizeObserver.observe(el);
+    entry.el = el;
+    changed = true;
+  }
+  outlineEntries[outlineEntries.length - 1]!.box.classList.add('phish-outline-newest');
+
+  if (showBlur) ensureBlurLayer();
+  else removeBlur();
+  place();
+  if (changed) startPoll();
+}
+
+function disarmVisibilityWatch(): void {
+  visibilityWatcher?.disconnect();
+  visibilityWatcher = null;
+  if (watcherFrame) {
+    cancelAnimationFrame(watcherFrame);
+    watcherFrame = 0;
+  }
+}
+
+/**
+ * Persistent watcher for the warning session: an element dropping out (login
+ * card swapped, modal closed) must drop its box, and one coming back (modal
+ * opened, selector rematching) must restore it -- at any time, not only while
+ * something is already missing.
+ *
+ * Self-triggering is cut by record: mutations whose target is a node this
+ * module owns (the outline/blur layers and their contents) are ignored, so
+ * no suspend flag around our own writes is needed.
+ */
+function armVisibilityWatch(): void {
+  if (visibilityWatcher) return;
+  visibilityWatcher = new MutationObserver((mutations) => {
+    if (watcherFrame) return;
+    for (const m of mutations) {
+      const t = m.target as Node;
+      if (t === outlineLayer || t === blurLayer || t === styleElement) continue;
+      if (outlineLayer?.contains(t) || blurLayer?.contains(t)) continue;
+      watcherFrame = requestAnimationFrame(() => {
+        watcherFrame = 0;
+        reconcileTargets();
+      });
+      return;
+    }
+  });
+  visibilityWatcher.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'open'],
+  });
+}
+
+/**
+ * Re-resolve each outlined evidence's element after a DOM change. Entries are
+ * never created or destroyed here -- the revealed evidence set only changes on
+ * a stage transition, and rebuilding boxes on every mutation is what caused
+ * transient flicker. `place()` hides a box whose element is not resolvable.
+ */
+function reconcileTargets(): void {
+  if (!outlineLayer && !activeHighlight) {
+    disarmVisibilityWatch();
+    return;
+  }
+  let changed = false;
+  for (const entry of outlineEntries) {
+    const el = resolveElement(entry.flagged, entry.el);
+    if (el === entry.el) continue;
+    if (entry.el) resizeObserver.unobserve(entry.el);
+    if (el) resizeObserver.observe(el);
+    entry.el = el;
+    changed = true;
+  }
+  if (changed) {
+    place();
+    startPoll();
+  } else {
+    placeIfChanged();
+  }
+  reanchorNewest();
+  armVisibilityWatch();
+}
+
+/**
+ * Keep Driver's anchor on the newest piece of evidence in step with the DOM.
+ *
+ * The hidden-at-reveal case (a credential field inside a closed modal) needs
+ * the popover to move onto the field the moment it appears, and a removed or
+ * hidden field needs it to fall back to unanchored -- always the same
+ * evidence text, never a stand-in element. `refresh()` alone cannot do that:
+ * it re-renders Driver's existing element. So when the resolved anchor
+ * identity differs from what was last handed to Driver, re-issue the step.
+ */
+function reanchorNewest(): void {
+  if (!activeHighlight) return;
+  const newest = currentEvidence[currentEvidence.length - 1];
+  if (!newest) return;
+  const bound = outlineEntries.find((entry) => entry.flagged === newest)?.el ?? null;
+  // Anchor only to an element that is actually measurable now; a hidden one
+  // leaves the popover unanchored (the same evidence text, no guess).
+  const anchor = bound && isRendered(bound) && isStyleVisible(bound) ? bound : null;
+  if (anchor === lastNewestAnchor) return;
+  lastNewestAnchor = anchor;
+  activeHighlight.highlight(
+    stepForElement(newest, anchor, Boolean(currentOptions?.onNext), currentOptions?.comparison),
+  );
 }
 
 // ── Blur suspension during scroll ──
@@ -339,169 +713,6 @@ function scheduleBlurResume(): void {
   blurResumeTimer = window.setTimeout(resumeBlurAfterScroll, BLUR_RESUME_MS);
 }
 
-// Scroll fires far faster than the screen repaints; coalescing to one
-// update per frame keeps the outlines locked to their elements instead of
-// lagging behind them.
-let frame = 0;
-const onReposition = () => {
-  // Scroll and resize both invalidate the blur's hole positions; suspend the
-  // expensive layer for the gesture and schedule its restoration instead of
-  // paying a whole-page re-filter on every frame.
-  suspendBlurForScroll();
-  scheduleBlurResume();
-  if (frame) return;
-  frame = requestAnimationFrame(() => {
-    frame = 0;
-    place();
-  });
-};
-let listening = false;
-
-function startListening(): void {
-  if (listening) return;
-  listening = true;
-  window.addEventListener('scroll', onReposition, true);
-  window.addEventListener('resize', onReposition);
-}
-
-function stopListening(): void {
-  if (!listening) return;
-  listening = false;
-  window.removeEventListener('scroll', onReposition, true);
-  window.removeEventListener('resize', onReposition);
-}
-
-function ensureOutlineLayer(): void {
-  if (outlineLayer) return;
-  outlineLayer = document.createElement('div');
-  outlineLayer.id = OUTLINE_ID;
-  outlineLayer.style.cssText =
-    `position:fixed;inset:0;pointer-events:none;z-index:${OUTLINE_Z};`;
-  document.body.append(outlineLayer);
-  startListening();
-}
-
-/** The blur goes in underneath the outlines. Its holes are cut in `place()`,
- *  so it never renders as a full-page blur even for one frame. */
-function ensureBlurLayer(): void {
-  if (blurLayer || !canBlur()) return;
-  blurLayer = document.createElement('div');
-  blurLayer.style.cssText =
-    `position:fixed;inset:0;pointer-events:none;z-index:${BLUR_Z};`
-    + `backdrop-filter:blur(${BLUR_PX}px);-webkit-backdrop-filter:blur(${BLUR_PX}px);`;
-  document.body.append(blurLayer);
-}
-
-/** Remove the blur but keep the outlines: the page returns to a readable
- *  state while everything revealed so far stays marked. Also cancels any
- *  pending scroll-gesture restoration -- without this, a timer scheduled just
- *  before a Skip could resurrect the layer afterwards. */
-function removeBlur(): void {
-  if (blurResumeTimer != null) {
-    clearTimeout(blurResumeTimer);
-    blurResumeTimer = null;
-  }
-  blurSuspended = false;
-  blurLayer?.remove();
-  blurLayer = null;
-}
-
-/**
- * Bring the outlines in line with the evidence revealed so far.
- *
- * Stages only ever *append* (the ladder reveals a growing prefix), so the
- * common path adds boxes and re-cuts the blur mask in place -- no layer
- * teardown, no flash. A rebuild happens only when the new list is not a
- * pure extension of the current one (a fresh warning, an element dropping
- * out of view and reshuffling the numbering).
- */
-function syncOutlines(evidence: FlaggedElement[], showBlur: boolean): void {
-  const targets = computeTargets(evidence);
-
-  const canAppend =
-    outlineLayer !== null
-    && targets.length >= outlineEntries.length
-    && targets.every((t, i) =>
-      i >= outlineEntries.length
-      || (t.flagged === outlineEntries[i]!.flagged && t.el === outlineEntries[i]!.el));
-
-  if (!canAppend) clearOutlines();
-  if (targets.length === 0) {
-    if (showBlur) removeBlur();
-    return;
-  }
-
-  ensureOutlineLayer();
-  // The most recently revealed item pulses; the earlier ones stay put so the
-  // accumulated picture does not turn into a light show.
-  if (outlineEntries.length > 0) {
-    outlineEntries[outlineEntries.length - 1]!.box.classList.remove('phish-outline-newest');
-  }
-  for (let i = outlineEntries.length; i < targets.length; i++) {
-    const box = makeBox(targets[i]!.flagged, i);
-    outlineLayer!.append(box);
-    outlineEntries.push({ flagged: targets[i]!.flagged, el: targets[i]!.el, box });
-  }
-  outlineEntries[outlineEntries.length - 1]!.box.classList.add('phish-outline-newest');
-
-  if (showBlur) ensureBlurLayer();
-  else removeBlur();
-  place();
-}
-
-/**
- * How many revealed pieces have a selector but no on-screen element right now
- * -- e.g. a credential field still inside a closed modal. While this is
- * non-zero, the DOM is watched so the outline can appear the instant it shows.
- */
-function pendingTargetCount(evidence: FlaggedElement[]): number {
-  const withSelector = evidence.filter((f) => f.selector).length;
-  return withSelector - computeTargets(evidence).length;
-}
-
-function disarmVisibilityWatch(): void {
-  visibilityWatcher?.disconnect();
-  visibilityWatcher = null;
-  if (watcherFrame) {
-    cancelAnimationFrame(watcherFrame);
-    watcherFrame = 0;
-  }
-}
-
-/**
- * Arm (or disarm) the watcher for the current stage's evidence. Armed only
- * while a revealed piece is still off screen, and it re-syncs only when the
- * resolvable count actually changes -- so a mutation-heavy page costs one rect
- * check per animation frame, not a rebuild. Re-evaluates after each change and
- * disconnects itself once nothing is left hidden.
- */
-function armVisibilityWatch(): void {
-  if (pendingTargetCount(currentEvidence) === 0) {
-    disarmVisibilityWatch();
-    return;
-  }
-  if (visibilityWatcher) return;
-  visibilityWatcher = new MutationObserver(() => {
-    if (watcherFrame) return;
-    watcherFrame = requestAnimationFrame(() => {
-      watcherFrame = 0;
-      if (!outlineLayer && !activeHighlight) {
-        disarmVisibilityWatch();
-        return;
-      }
-      if (computeTargets(currentEvidence).length === outlineEntries.length) return;
-      syncOutlines(currentEvidence, currentShowBlur);
-      armVisibilityWatch();
-    });
-  });
-  visibilityWatcher.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'open'],
-  });
-}
-
 /**
  * Can we punch holes in a blur?
  *
@@ -523,8 +734,6 @@ function canBlur(): boolean {
   );
 }
 
-type Hole = { left: number; top: number; width: number; height: number };
-
 /**
  * Repaint the blur's mask so every revealed element stays sharp.
  *
@@ -532,21 +741,15 @@ type Hole = { left: number; top: number; width: number; height: number };
  * per hole above it composited with `exclude` (XOR). Since each hole lies
  * inside the full cover, XOR removes it -- which is how several holes are cut
  * at once, one per piece of evidence revealed so far.
+ *
+ * Overlapping holes would XOR back to opaque *inside* the evidence, so the
+ * holes are first merged into their unions (utils/blur-holes). That keeps the
+ * mechanism -- proven in this extension -- while eliminating the blurred
+ * intersection the old contained-only filter left behind.
  */
 function paintBlurHoles(all: Hole[]): void {
   if (!blurLayer) return;
-  // XOR means two overlapping holes cancel back to opaque, leaving a blurred
-  // patch *inside* the evidence. Flagged elements nest in practice -- a logo
-  // inside a flagged header -- so drop any hole already contained in another
-  // and let the larger one cover it.
-  const holes = all.filter((h, i) => !all.some((other, j) => (
-    j !== i
-    && other.left <= h.left && other.top <= h.top
-    && other.left + other.width >= h.left + h.width
-    && other.top + other.height >= h.top + h.height
-    // A pair of identical rects would otherwise discard both.
-    && (other.width * other.height > h.width * h.height || j < i)
-  )));
+  const holes = mergeHoles(all);
   const images: string[] = [];
   const sizes: string[] = [];
   const positions: string[] = [];
@@ -573,7 +776,20 @@ function paintBlurHoles(all: Hole[]): void {
 
 function clearOutlines(): void {
   stopListening();
+  clearPoll();
   removeBlur();
+  disarmVisibilityWatch();
+  resizeObserver.disconnect();
+  // The reposition rAF (and any pending blur-resume timer, handled inside
+  // removeBlur) must not survive the layer teardown: a callback landing
+  // after clearOutlines() would find a null layer and do nothing here, but
+  // if a *new* warning starts later, the stale callback would repaint that
+  // new session's outlines with the old element references.
+  if (frame) {
+    cancelAnimationFrame(frame);
+    frame = 0;
+  }
+  lastGeometry = '';
   outlineLayer?.remove();
   outlineLayer = null;
   outlineEntries = [];
@@ -598,6 +814,7 @@ function ensureStyles(): void {
  * unlike Dismiss.
  */
 export function hidePopover(): void {
+  currentShowBlur = false;
   tearingDownInternally = true;
   activeHighlight?.destroy();
   tearingDownInternally = false;
@@ -612,7 +829,6 @@ export function isPopoverVisible(): boolean {
   return activeHighlight !== null;
 }
 
-/** Destroy any highlight currently on screen, and remove its stylesheet. */
 /** Full teardown: popover, outlines, blur, injected styles. Used when the
  *  whole warning ends -- not between stages, which keep their layers and
  *  update in place (see highlightEvidence). */
@@ -622,7 +838,7 @@ export function clearHighlight(): void {
   tearingDownInternally = false;
   activeHighlight = null;
   currentOptions = null;
-  disarmVisibilityWatch();
+  lastNewestAnchor = null;
   currentEvidence = [];
   clearOutlines();
   styleElement?.remove();
@@ -668,12 +884,19 @@ function escapeHtml(text: string): string {
 
 function stepForElement(
   flagged: FlaggedElement,
+  el: HTMLElement | null,
   offerNext: boolean,
   comparison?: BrandComparison,
 ): DriveStep {
   return {
-    element: flagged.selector || undefined,
-    // Without a usable selector Driver.js shows the popover unanchored rather
+    // The element object itself, not the selector: Driver re-queries a string
+    // selector on every refresh, so an nth-child shift would silently move
+    // the spotlight onto a different node. Passing the element pins the
+    // anchor to the identity we outlined; when it is missing/hidden, undefined
+    // leaves the popover unanchored (Driver's dummy-element fallback) -- the
+    // same evidence text, just not pinned to a guess.
+    element: el ?? undefined,
+    // Without a usable element Driver.js shows the popover unanchored rather
     // than failing on a missing node.
     skipMissingElement: true,
     popover: {
@@ -752,7 +975,7 @@ export function highlightEvidence(
   // tearing the layer down, so a stage transition never blinks the blur off
   // and back on. Some evidence (the domain, reused wording) is not a thing on
   // the page, so it gets a popover but no outline -- it still has to be shown.
-  syncOutlines(evidence, !outlinesOnly);
+  syncEntries(evidence, !outlinesOnly);
 
   // Keep watching for a revealed-but-hidden element (a credential field in a
   // closed modal) so its outline appears the moment the participant opens it.
@@ -785,10 +1008,10 @@ export function highlightEvidence(
       // immediately (the driver-simple class also drops the popover's own
       // fade), so a stage change costs one frame instead of twenty-five.
       animate: false,
-      // Dim the page around the spotlit element. Dimming and click-blocking are
-      // separate concerns: the overlay is set to pointer-events:none, so the
-      // page darkens but stays fully usable. Driver cuts a hole around the
-      // current element, which is what makes the evidence jump out.
+      // Dim the page around the spotlit element. Dimming and click-blocking
+      // are separate concerns: the overlay is set to pointer-events:none, so
+      // the page darkens but stays fully usable. Driver cuts a hole around
+      // the current element, which is what makes the evidence jump out.
       overlayOpacity: 0.45,
       // An animated scroll animates the blur mask's repaint along with it.
       // Snapping once reads as steadier than gliding under a frost layer.
@@ -796,10 +1019,12 @@ export function highlightEvidence(
       stageRadius: 8,
       stagePadding: 6,
       showProgress: false,
-      // Explicit buttons are the only way out. Closing on an outside click made
-      // any stray click on the page log a dismissal the participant never chose.
+      // Explicit buttons are the only way out. Closing on an outside click
+      // made any stray click on the page log a dismissal the participant
+      // never chose.
       allowClose: false,
-      // Advancing means "reveal more evidence", which is the monitor's business.
+      // Advancing means "reveal more evidence", which is the monitor's
+      // business.
       onNextClick: () => currentOptions?.onNext?.(),
       // Safety net for a teardown this module did not initiate. With
       // allowClose disabled, driver.js cannot destroy itself (ESC and the
@@ -808,9 +1033,10 @@ export function highlightEvidence(
       onDestroyed: () => {
         if (!tearingDownInternally) currentOptions?.actions?.onDismiss();
       },
-      // Driver.js only knows next/previous/close, so the other exits are added
-      // to the footer directly. The popover DOM is rebuilt per highlight, so
-      // this runs fresh each stage and cannot accumulate buttons.
+      // Driver.js only knows next/previous/close, so the other exits are
+      // added to the footer directly. The popover DOM is rebuilt per
+      // highlight, so this runs fresh each stage and cannot accumulate
+      // buttons.
       onPopoverRender: (popover) => {
         const opts = currentOptions;
         if (!opts?.actions) return;
@@ -823,5 +1049,8 @@ export function highlightEvidence(
     });
   }
 
-  activeHighlight.highlight(stepForElement(newest, Boolean(onNext), comparison));
+  const bound = outlineEntries.find((entry) => entry.flagged === newest)?.el ?? null;
+  const newestAnchor = bound && isRendered(bound) && isStyleVisible(bound) ? bound : null;
+  lastNewestAnchor = newestAnchor;
+  activeHighlight.highlight(stepForElement(newest, newestAnchor, Boolean(onNext), comparison));
 }

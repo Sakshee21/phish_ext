@@ -8,10 +8,11 @@
  *
  * The study is between-subjects: a participant sees exactly one of these for
  * the whole study. Progressive Reveal is a single self-contained condition
- * with four internal stages -- it reuses the other renderers as containers,
- * but a participant assigned to it never experiences the others as
- * conditions, and a participant assigned to (say) 'banner' never escalates to
- * anything else.
+ * whose ladder length is derived from the verdict (one watching stage, one
+ * reveal stage per piece of evidence, one confirmation) -- it composes the
+ * evidence spotlight and the final modal, but a participant assigned to it
+ * never experiences the other conditions, and a participant assigned to (say)
+ * 'banner' never escalates to anything else.
  */
 
 export type WarningCondition = 'banner' | 'modal' | 'tooltip' | 'icon' | 'progressive';

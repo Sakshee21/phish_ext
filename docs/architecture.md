@@ -32,15 +32,18 @@ Combined, they cover more cases than any single method and produce an **explaina
 ## Communication flow
 
 ```
-Background SW ----> Offscreen Doc          (COMPUTE_PHASH -> PHASH_RESULT)
-Background SW ----> Content Script          (DETECTED)
-Background SW ----> Content Script          (GET_FEATURES -> FEATURES_RESULT)   # pulled on demand
-Content Script ---> Background SW            (PAGE_READY, SET_BADGE, GO_BACK, LEFT_PAGE)
-Popup ------------> Background SW            (RESCAN)
-Popup ------------> Logs tab                 (browser.tabs.create -> /logs.html)
+Background SW ----> Offscreen Doc     (COMPUTE_PHASH -> PHASH_RESULT)
+Background SW ----> Content Script    (DETECTED)
+Background SW ----> Content Script    (GET_FEATURES -> FEATURES_RESULT)
+Background SW ----> Content Script    (EXTENSION_DISABLED)
+Content Script ---> Background SW     (PAGE_READY, SET_BADGE, GO_BACK, LEFT_PAGE, SUBMITTED)
+Popup ------------> Background SW     (RESCAN, GET_ENABLED/SET_ENABLED,
+                                       GET_TAB_STATUS, REPORT_FALSE_POSITIVE)
+Popup ------------> Logs tab          (browser.tabs.create -> /logs.html)
 ```
 
-- pHash and logo matching run in an **offscreen document** (canvas access).
+- pHash runs in an **offscreen document** (canvas access). Logo template matching
+  (`MATCH_LOGOS`) lives there too but is still a stub — see Layer 3 above.
 - Domain checks run in the **background service worker** (pure strings).
 - DOM extraction and warning UI run in the **content script** (page access).
 - The **logs page** (`/logs.html`, opened from the popup) reads storage directly in
@@ -51,11 +54,20 @@ Popup ------------> Logs tab                 (browser.tabs.create -> /logs.html)
 
 ## Logs & study data (privacy model)
 
-The extension records every warning interaction into `storage.local` — it never
-sends anything off-device. The participant-facing **study log** page
-(`src/entrypoints/logs/`, opened from the popup) shows that record and is the
-only way it leaves the browser: the participant filters it and exports a JSON
-payload (`src/utils/log-export.ts`) that a researcher imports for the study.
+Detection makes **no network calls**: every warning interaction is recorded into
+`storage.local` and stays on the device. There are exactly two ways data can
+leave, both explicitly triggered by the participant and anonymous:
+
+- The participant-facing **study log** page (`src/entrypoints/logs/`, opened
+  from the popup) shows the record. The participant can export a JSON payload
+  (`src/utils/log-export.ts`) to hand to a researcher, or press **Send to
+  study**, which uploads the current filtered view to the submission site
+  (`/api/upload`, origin set in `wxt.config.ts`).
+- The popup's **Report false positive** button POSTs the flagged verdict to the
+  same site (`/api/report`) for researcher review.
+
+Both uploads carry only study fields (participant ID, assigned condition,
+extension version, detection snapshot) — no device or browser fingerprinting.
 
 - Data lives under `storage.local['phish_interactions']` (bounded to the most
   recent 500 events; see `src/utils/interaction-log.ts`). Every event carries a
@@ -73,13 +85,14 @@ payload (`src/utils/log-export.ts`) that a researcher imports for the study.
   terminal events omit it to avoid duplicating it per stage. The logs page's
   expandable rows surface all of it; expanding a later event explains that the
   detail lives on the visit's first event.
-- **Engagement micro-events** (`approached` / `focused` / `typed`, Progressive
-  Reveal only) record the participant heading for the credentials despite the
-  warning: cursor entering the field's 120 px zone, focusing the password
-  field, and the first keystroke of a focus session. They carry no detection
-  snapshot — they're small by design, and the `escalated` event records whether
-  the participant pulled the next stage (`trigger: 'manual'`) or was pushed
-  (`'auto'`).
+- **Engagement micro-events** (`approached` / `focused` / `typed` /
+  `submitted`), logged for **all five** conditions, record the participant
+  heading for the credentials despite the warning: cursor entering the field's
+  120 px zone, focusing the password field, the first keystroke of a focus
+  session, and actually submitting the form. They carry no detection snapshot
+  — they're small by design, and the `escalated` event records whether the
+  participant pulled the next stage (`trigger: 'manual'`) or was pushed
+  (`'auto'`). A `reported` event records a false-positive report from the popup.
 - **Visits** (`src/utils/visits.ts`) group events by `visitId` and derive the
   study metrics: `timeToReactMs` (shown → terminal action), `engagedMs`
   (shown → last event), `timeToFirstSignalMs`, `stagesReached`,
@@ -94,14 +107,16 @@ payload (`src/utils/log-export.ts`) that a researcher imports for the study.
 - Exports (`src/utils/log-export.ts`, schema v3) carry only study fields —
   participant ID, assigned condition, extension version, export time, and the
   **visits** (nested events + metrics) — no device or browser fingerprinting.
-- The only auto-collected event that isn't a click is `left-page`, sent
-  fire-and-forget to the background on `pagehide` so a participant who reacts by
-  simply navigating away is still counted.
+- `left-page` is sent fire-and-forget to the background on `pagehide`, so a
+  participant who reacts by simply navigating away is still counted. Like
+  `submitted` and the approach/focus/typing micro-events, it is a non-click
+  signal.
 
 ## Build-time dataset (Python, dev-only)
 
 `tools/generate.py` generates the brand reference data once, offline. It captures each brand's page
-with headless Chromium (Playwright) at three viewports and precomputes:
+with headless Chromium (Playwright) at six viewports (1280x800, 1366x768, 1440x900, 1536x864,
+1600x900, 1920x1080) and precomputes:
 
 - Perceptual hashes of each capture, computed by shelling out to
   `scripts/hash-png.ts` — the *exact same* `src/utils/phash.ts` implementation the extension uses at

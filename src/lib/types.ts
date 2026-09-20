@@ -13,7 +13,7 @@ export interface BrandReference {
   /** Optional pHash per capture viewport, keyed e.g. "1280x800". Layer 1
    *  compares against the closest viewport to tolerate window-size drift. */
   phashByViewport?: Record<string, string>;
-  /** Hamming-distance threshold for a "close" match (<= 5 for pHash) */
+  /** Hamming-distance threshold for a "close" match (<= 7 for pHash) */
   phashThreshold: number;
   /** List of legitimate domains (e.g. ["paypal.com", "paypalobjects.com"]) */
   allowedDomains: string[];
@@ -145,6 +145,18 @@ export interface DOMFeatures {
    * on a password field misses that entire class of phishing page.
    */
   hasCredentialField?: boolean;
+  /**
+   * The page shows an ID-first login step: a visible text input paired with a
+   * login-flavored button ("Login", "Continue", ...), but no credential field
+   * the selector recognises.
+   *
+   * Step-two logins (HDFC NetBanking asks for the Customer ID first, the
+   * password on the next screen) have no password or email box on screen yet,
+   * so `hasCredentialField` misses them entirely. This counts as collecting
+   * credentials for the identification gates only -- it never renders its own
+   * warning UI.
+   */
+  hasLoginStep?: boolean;
   /** src attributes of any <img> elements that look like logos */
   logoCandidates: string[];
   /** Dominant CSS colours extracted from the page */
@@ -276,6 +288,26 @@ export interface RescanMessage {
   type: 'RESCAN';
 }
 
+// popup ↔ background (enable/disable the extension for casual browsing)
+export interface GetEnabledMessage {
+  type: 'GET_ENABLED';
+}
+
+export interface EnabledStatusMessage {
+  type: 'ENABLED_STATUS';
+  enabled: boolean;
+}
+
+export interface SetEnabledMessage {
+  type: 'SET_ENABLED';
+  enabled: boolean;
+}
+
+// background → content (protection was turned off: tear down any warning UI)
+export interface ExtensionDisabledMessage {
+  type: 'EXTENSION_DISABLED';
+}
+
 // popup ↔ background (false-positive reporting)
 
 /**
@@ -339,6 +371,10 @@ export type ExtensionMessage =
   | SubmittedMessage
   | GoBackMessage
   | RescanMessage
+  | GetEnabledMessage
+  | EnabledStatusMessage
+  | SetEnabledMessage
+  | ExtensionDisabledMessage
   | GetTabStatusMessage
   | TabStatusMessage
   | ReportFalsePositiveMessage

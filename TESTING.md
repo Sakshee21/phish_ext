@@ -15,7 +15,7 @@
 
 This doc covers how to validate Layer 1 (perceptual hashing). The implementation
 passes both a synthetic self-check and a real-screenshot validation; this guide
-is how to re-run it and stress-test the `<= 5` Hamming-distance threshold with
+is how to re-run it and stress-test the `<= 7` Hamming-distance threshold with
 more real-world screenshot pairs. The dataset generator that Layer 1 compares
 against at runtime now exists in `tools/` (see `tools/README.md`); the
 `test-images/` workflow below is for validating the hashing threshold itself,
@@ -74,8 +74,9 @@ If `test-images/` is empty, the real-image section will fail or skip — that's 
 
 ## 5. Add your own real screenshot pairs
 
-The goal here is to stress-test the `≤5` threshold (from `docs/architecture.md`)
-against a few real site pairs, not just one sample.
+The goal here is to stress-test the `≤7` threshold (the value shipped in
+`brands.json`, defined in `src/utils/phash.ts`) against a few real site pairs,
+not just one sample.
 
 For each pair, you need three files in `test-images/`:
 
@@ -102,7 +103,7 @@ pnpm test:phash
 
 ## 6. What "pass" looks like
 
-- `Hamming(same-1, same-2)` should be **comfortably ≤5** (recent runs landed at 0–2 — single digits at most).
+- `Hamming(same-1, same-2)` should be **comfortably ≤7** (recent runs landed at 0–2 — single digits at most).
 - `Hamming(same-1, different)` should be **clearly larger** — expect somewhere in the 25-40 range.
 - There should be a large, obvious gap between the two numbers — no case where a "same page" pair creeps close to a "different page" pair.
 

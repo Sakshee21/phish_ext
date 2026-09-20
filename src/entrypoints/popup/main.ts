@@ -5,6 +5,8 @@ const statusLabel = document.querySelector<HTMLSpanElement>('#status-label')!;
 const scanCount = document.querySelector<HTMLSpanElement>('#scan-count')!;
 const threatCount = document.querySelector<HTMLSpanElement>('#threat-count')!;
 const conditionSelect = document.querySelector<HTMLSelectElement>('#condition-select')!;
+const enabledToggle = document.querySelector<HTMLInputElement>('#enabled-toggle')!;
+const appEl = document.querySelector<HTMLElement>('#app')!;
 const openLogsBtn = document.querySelector<HTMLButtonElement>('#open-logs')!;
 const versionEl = document.querySelector<HTMLElement>('#version')!;
 
@@ -41,6 +43,34 @@ if (!DEV_MODE) {
   });
 }
 
+// ── Protection toggle (casual browsing) ──
+// Disabled means the background skips the whole pipeline: no scans, no
+// warnings. Persisted in storage.local, defaults to enabled.
+
+let protectionEnabled = true;
+
+async function initToggle(): Promise<void> {
+  try {
+    const res = (await browser.runtime.sendMessage({
+      type: 'GET_ENABLED',
+    } satisfies ExtensionMessage)) as { type?: string; enabled?: boolean };
+    protectionEnabled = res?.type === 'ENABLED_STATUS' ? (res.enabled ?? true) : true;
+  } catch {
+    protectionEnabled = true;
+  }
+  enabledToggle.checked = protectionEnabled;
+  appEl.classList.toggle('is-disabled', !protectionEnabled);
+
+  enabledToggle.addEventListener('change', () => {
+    protectionEnabled = enabledToggle.checked;
+    appEl.classList.toggle('is-disabled', !protectionEnabled);
+    void browser.runtime
+      .sendMessage({ type: 'SET_ENABLED', enabled: protectionEnabled } satisfies ExtensionMessage)
+      .catch(() => {});
+    void refreshStats();
+  });
+}
+
 // ── Stats from the interaction log ──
 
 function summarize(events: Array<{ type?: string; riskScore?: number; url?: string }>): { scans: number; threats: number } {
@@ -67,7 +97,10 @@ async function refreshStats(): Promise<void> {
     scanCount.textContent = String(scans);
     threatCount.textContent = String(threats);
 
-    if (threats > 0) {
+    if (!protectionEnabled) {
+      statusDot.className = 'status-idle';
+      statusLabel.textContent = 'Disabled';
+    } else if (threats > 0) {
       statusDot.className = 'status-threat';
       statusLabel.textContent = 'Threats flagged';
     } else if (scans > 0) {
@@ -128,10 +161,10 @@ async function initReport(): Promise<void> {
   const entry = res?.type === 'TAB_STATUS' ? res.entry : null;
 
   // Only a flagged page can be a false positive; anything else leaves the
-  // popup exactly as it was. Logged rather than silent: when this fires
-  // unexpectedly, the popup console is where the hunt starts.
+  // popup exactly as it was. Debug-level: opening the popup on an ordinary
+  // safe page hits this every time, so warn-level noise buries real issues.
   if (!entry || !entry.isSuspicious) {
-    console.warn(
+    console.debug(
       '[phish_ext] No reportable verdict for tab',
       tab.id,
       res?.type === 'TAB_STATUS'
@@ -182,6 +215,7 @@ async function initReport(): Promise<void> {
 
 async function init(): Promise<void> {
   versionEl.textContent = `v${browser.runtime.getManifest().version}`;
+  await initToggle();
   if (DEV_MODE) {
     const condition = await resolveCondition();
     if (condition) conditionSelect.value = condition;
