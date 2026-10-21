@@ -1,4 +1,5 @@
 import { defineConfig } from 'wxt';
+import { loadEnv } from 'vite';
 
 /**
  * Submission-site origin injected into the app as WXT_SUBMISSION_SITE. Dev
@@ -23,6 +24,23 @@ function detectMode(): string {
 const mode = detectMode();
 const isProduction = mode === 'production';
 
+/**
+ * Jev (TypeSafe) runtime adjudication is optional.
+ *
+ * The extension calls the study site's `/api/jev` proxy, not TypeSafe
+ * directly: TypeSafe rejects `chrome-extension://` origins at the CORS
+ * preflight, and a proxy also keeps the API key out of a distributed bundle.
+ * Set `JEV_ENDPOINT` only to override the proxy origin.
+ */
+const env = loadEnv(mode, process.cwd(), '');
+const jevModel = process.env.TYPESAFE_MODEL ?? env.TYPESAFE_MODEL ?? 'jev-1.14.0';
+const submissionSite = isProduction ? PROD_SUBMISSION_SITE : DEV_SUBMISSION_SITE;
+const jevEndpoint =
+  process.env.JEV_ENDPOINT ?? env.JEV_ENDPOINT ?? `${submissionSite}/api/jev`;
+const jevProxyToken = process.env.JEV_PROXY_TOKEN ?? env.JEV_PROXY_TOKEN ?? '';
+const jevEnabled =
+  process.env.JEV_ENABLED ?? env.JEV_ENABLED ?? (jevProxyToken ? 'true' : 'false');
+
 export default defineConfig({
   srcDir: 'src',
   manifest: {
@@ -46,9 +64,11 @@ export default defineConfig({
   },
   vite: () => ({
     define: {
-      'import.meta.env.WXT_SUBMISSION_SITE': JSON.stringify(
-        isProduction ? PROD_SUBMISSION_SITE : DEV_SUBMISSION_SITE,
-      ),
+      'import.meta.env.WXT_SUBMISSION_SITE': JSON.stringify(submissionSite),
+      'import.meta.env.WXT_TYPESAFE_MODEL': JSON.stringify(jevModel),
+      'import.meta.env.WXT_JEV_ENDPOINT': JSON.stringify(jevEndpoint),
+      'import.meta.env.WXT_JEV_PROXY_TOKEN': JSON.stringify(jevProxyToken),
+      'import.meta.env.WXT_JEV_ENABLED': JSON.stringify(jevEnabled),
     },
   }),
 });

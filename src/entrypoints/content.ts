@@ -369,6 +369,12 @@ export default defineContentScript({
         logoCandidates: logo?.getAttribute('src') ? [logo.getAttribute('src')!] : [],
         dominantColors: extractColors(),
         pageKeywords: keywords,
+        // Independent evidence for Jev / reviewer triage. Bounded so a report
+        // stays small; whitespace is collapsed to keep it readable.
+        pageExcerpt: ((document.body && document.body.innerText) || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 1000),
         title: document.title,
         devicePixelRatio: window.devicePixelRatio || 1,
         fontFamily: getComputedStyle(document.body).fontFamily,

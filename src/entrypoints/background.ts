@@ -5,6 +5,8 @@ import { hammingDistance } from '@/utils/phash';
 import { ensureAssigned, getParticipantId } from '@/utils/condition-assignment';
 import { isEnabled, setEnabled } from '@/utils/enabled';
 import { logInteraction, sanitizeResult } from '@/utils/interaction-log';
+import { isJevEnabled, scoreCandidate } from '@/utils/jev';
+import { applyJevPolicy } from '@/utils/jev-policy';
 
 export default defineBackground(() => {
   console.log('[phish_ext] Background service worker started');
@@ -712,9 +714,14 @@ export default defineBackground(() => {
         ...(domain.matchedAllowedDomain ? { matchedAllowedDomain: domain.matchedAllowedDomain } : {}),
         ...(domain.distance != null ? { distance: domain.distance } : {}),
       },
+      // Independent evidence for Jev (Layer 4) and for the reviewer dashboard
+      // when this verdict is reported as a false positive.
+      ...(features?.title ? { pageTitle: features.title } : {}),
+      ...(features?.pageExcerpt ? { pageExcerpt: features.pageExcerpt } : {}),
+      officialDomains: matchedBrand.allowedDomains,
     };
 
-    const result: DetectionResult = {
+    let result: DetectionResult = {
       riskScore,
       matchedBrand: matchedBrand.id,
       flaggedElements,
@@ -732,6 +739,28 @@ export default defineBackground(() => {
         : undefined,
     };
 
+    // ── Layer 4 (optional, network): Jev second opinion ──
+    // Runs only after the local pipeline has produced a *suspicious* candidate
+    // verdict. Jev can suppress a confident false positive or escalate a
+    // borderline match; on timeout/error the local verdict stands unchanged.
+    // It never second-guesses an official domain, and never gates the local
+    // layers, so a network failure degrades gracefully.
+    if (isJevEnabled() && domain.isSuspicious) {
+      const jev = await scoreCandidate({
+        url,
+        features,
+        brand: matchedBrand,
+        localRiskScore: result.riskScore,
+        signals,
+        flaggedElements: flaggedElements.map((f) => ({
+          element: f.element,
+          ...(f.title ? { title: f.title } : {}),
+          ...(f.note ? { note: f.note } : {}),
+        })),
+      });
+      if (jev) result = applyJevPolicy(result, jev);
+    }
+
     // Hand the verdict to the content script -> warning UI, and remember it
     // for this tab so the popup can offer a false-positive report while the
     // flagged page is still on screen.
@@ -747,8 +776,10 @@ export default defineBackground(() => {
       url,
       hostname,
       matchedBrand: matchedBrand.id,
-      riskScore,
-      isSuspicious: domain.isSuspicious,
+      riskScore: result.riskScore,
+      // A Jev suppression means no warning actually fired, so the popup must
+      // not offer "Report false positive" for it.
+      isSuspicious: result.riskScore > 0.5 && domain.isSuspicious,
       condition: await ensureAssigned().catch(() => null),
       reported: false,
       ts: Date.now(),
@@ -824,6 +855,12 @@ export default defineBackground(() => {
         participantId: await getParticipantId(),
         extensionVersion: browser.runtime.getManifest().version,
         reportedTs: Date.now(),
+        // Independent evidence for Jev / reviewer triage. Optional on the
+        // receiving side, so older extension builds remain compatible.
+        brandName: entry.result.comparison?.name,
+        officialDomains: entry.result.signals?.officialDomains,
+        pageTitle: entry.result.signals?.pageTitle,
+        pageExcerpt: entry.result.signals?.pageExcerpt,
       }),
     });
     const data = (await res.json()) as { ok?: boolean; error?: string };

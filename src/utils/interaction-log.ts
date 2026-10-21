@@ -59,6 +59,8 @@ export interface LoggedResult {
   signals?: DetectionResult['signals'];
   flaggedElements?: Array<Pick<FlaggedElement, 'element' | 'reason' | 'title' | 'note'>>;
   comparison?: Omit<BrandComparison, 'thumbnail'>;
+  /** Optional Jev second opinion, for offline analysis of layer 4. */
+  jev?: DetectionResult['jev'];
 }
 
 export interface InteractionEvent {
@@ -108,6 +110,10 @@ let writeChain: Promise<void> = Promise.resolve();
  */
 export function sanitizeResult(result: DetectionResult): LoggedResult {
   const logged: LoggedResult = { reasoning: result.reasoning, signals: result.signals };
+
+  if (result.jev) {
+    logged.jev = result.jev;
+  }
 
   if (result.flaggedElements.length > 0) {
     logged.flaggedElements = result.flaggedElements.map((f) => ({
