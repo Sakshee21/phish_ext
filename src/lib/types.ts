@@ -85,6 +85,42 @@ export interface DetectionResult {
    * The warning UI ignores it; it exists for logging and offline analysis.
    */
   signals?: DetectionSignals;
+  /**
+   * Optional Jev adjudication (Layer 4). Present only when runtime scoring is
+   * enabled and the request succeeded; the local verdict is always computed
+   * first and remains the fallback.
+   */
+  jev?: JevAssessment;
+}
+
+/**
+ * A Jev (TypeSafe) second opinion on the local verdict.
+ *
+ * Jev returns typed answers, not prose: a Noul probability, a Choice verdict
+ * with confidence, a Score for the strength of impersonation evidence, and a
+ * Choice for which brand the page actually presents. The extension composes
+ * these into a policy (see utils/jev-policy.ts); it never displays them as
+ * generated text.
+ */
+export interface JevAssessment {
+  /** Versioned model id that answered (e.g. "jev-1.14.0"). */
+  model: string;
+  /** Question-set version, so the log can be traced to a prompt. */
+  promptVersion: string;
+  /** Noul: probability the page is phishing (0–1). */
+  phishingProbability: number;
+  /** Choice: categorical conclusion. */
+  verdict: 'phishing' | 'legitimate' | 'uncertain';
+  /** Choice confidence (0–1), not the same thing as the probability. */
+  certainty: number;
+  /** Score 0–3: how strong the impersonation evidence is. */
+  impersonationLikelihood: number;
+  /** Choice: which brand the page appears to present. */
+  brandPresented: 'candidate_brand' | 'different_brand' | 'no_brand';
+  /** Round-trip time for the Jev call. */
+  latencyMs: number;
+  /** Present when the call failed; the local verdict still stands. */
+  error?: string;
 }
 
 /** Raw Layer 1/2/3 signals, captured at pipeline time for the study log. */
@@ -112,6 +148,14 @@ export interface DetectionSignals {
     /** Edit distance to that domain (0 for homoglyphs). */
     distance?: number;
   };
+  /**
+   * Independent evidence passed to Jev (and to the reviewer dashboard) so its
+   * judgment is not just a re-read of the rule outputs. All optional so old
+   * log entries remain valid.
+   */
+  pageTitle?: string;
+  pageExcerpt?: string;
+  officialDomains?: string[];
 }
 
 // ── DOM features extracted by the content script ──
@@ -163,6 +207,12 @@ export interface DOMFeatures {
   dominantColors: string[];
   /** Text content keywords (first 500 chars of visible text) */
   pageKeywords: string[];
+  /**
+   * A short, whitespace-collapsed excerpt of visible page text. Sent to Jev
+   * (when enabled) and to the reviewer dashboard as independent evidence;
+   * capped by the content script so the report stays small.
+   */
+  pageExcerpt?: string;
   /** Page <title> */
   title: string;
   /**

@@ -54,3 +54,7 @@ tools/.venv/
 test-pages/*.html
 !test-pages/clone-map.tsv
 !test-pages/README.md
+
+# Local secrets (Jev / TypeSafe key). Never commit these.
+.env.local
+.env.*.local

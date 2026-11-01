@@ -68,7 +68,12 @@ phish_ext/
 6. **Aggregation** — background builds a `DetectionResult{ riskScore, matchedBrand, flaggedElements, reasoning }`
    plus a `comparison` (the real brand's look, for the side-by-side panel). Layer 3's
    text/DOM signals are wired into the verdict; logo template matching is not — see status below.
-7. **Warning** — background sends `DETECTED` to the content script, which dispatches to the
+7. **Jev second opinion (optional)** — if `JEV_ENABLED=true` and the domain layer flagged the page,
+   background sends the candidate + page evidence to the study site's `/api/jev`, which calls
+   TypeSafe's Jev model. The policy (`utils/jev-policy.ts`) can suppress a confident false positive
+   or escalate a borderline match. On timeout/error the local verdict is unchanged. The same
+   evidence is stored in `signals` and `result.jev` for the study log.
+8. **Warning** — background sends `DETECTED` to the content script, which dispatches to the
    active warning condition (banner / modal / tooltip / icon / progressive) and logs every user action.
 
 ## Current status & next steps
@@ -94,12 +99,18 @@ phish_ext/
   export is a nested `visits` structure (schema v3).
 - Study-log viewer — participant-facing page (`/logs.html`, opened from the popup) showing the
   full interaction history with date/type/condition filters, a per-install participant ID, and a
-  JSON export (`utils/log-export.ts`) for researchers. Detection makes no network calls; data
-  leaves the device only through two participant-triggered actions: that export, and a **Send to
-  study** button that uploads the current view straight to the submission site, anonymously
-  (attributed by participant ID, no sign-in). The popup's false-positive report POSTs to the same
-  site. The origin is set in `wxt.config.ts` (`DEV_SUBMISSION_SITE` / `PROD_SUBMISSION_SITE`); the
-  button is disabled when it's empty.
+  JSON export (`utils/log-export.ts`) for researchers. Local detection makes no network calls;
+  with the optional Jev layer enabled, page evidence is sent to the study site's `/api/jev` (see
+  below). Otherwise data leaves the device only through two participant-triggered actions: that
+  export, and a **Send to study** button that uploads the current view straight to the submission
+  site, anonymously (attributed by participant ID, no sign-in). The popup's false-positive report
+  POSTs to the same site. The origin is set in `wxt.config.ts` (`DEV_SUBMISSION_SITE` /
+  `PROD_SUBMISSION_SITE`); the button is disabled when it's empty.
+- Jev second opinion (Layer 4) — `utils/jev.ts` sends one multi-question request to the study
+  site's `/api/jev` when the domain layer flags a page; `utils/jev-policy.ts` applies the result
+  conservatively. `result.jev` is logged with every flagged visit. Disabled by setting
+  `JEV_ENABLED=false`. The site proxy keeps the TypeSafe key server-side and works around
+  TypeSafe's rejection of `chrome-extension://` CORS origins.
 - Dataset tooling — `tools/generate.sh` captures brands at six viewports and writes `brands.json` (see `tools/README.md`).
 
 **Next:**
@@ -125,6 +136,23 @@ once per install (randomly, or via the dev-only popup picker):
 Driver.js (`highlightEvidence` in `utils/driver-highlight.ts`) renders Progressive
 Reveal's on-page evidence stages, highlighting the concrete `flaggedElements`
 that carry CSS selectors (from Layer 3 / visual-similarity flags).
+
+## Jev configuration (optional)
+
+The extension calls the study site's Jev proxy, never TypeSafe directly:
+
+- **Extension** (`.env.local`, gitignored): `TYPESAFE_MODEL=jev-1.14.0`, `JEV_PROXY_TOKEN=<shared token>`,
+  `JEV_ENABLED=true`. No TypeSafe API key is embedded in the extension. Dev builds point at
+  `http://localhost:3000/api/jev` via `.env.development.local`; production defaults to
+  `https://phishoff-site.vercel.app/api/jev`. Override with `JEV_ENDPOINT`.
+- **Site** (`.env.local` / Vercel): `TYPESAFE_API_KEY=<key>`, `TYPESAFE_MODEL=jev-1.14.0`, and the
+  same `JEV_PROXY_TOKEN`. The site's `/api/jev` forwards `{ model, state, questions }` to
+  `https://api.typesafe.ai/v1/systemone`, validates the model, rate-limits per IP, and returns the
+  upstream JSON unchanged.
+
+Set `JEV_ENABLED=false` (or leave `JEV_ENDPOINT` empty) to run fully local. The policy thresholds
+live in `utils/jev-policy.ts`; the question text lives in `utils/jev.ts`. Review both together.
+Run `pnpm test:jev-policy` for the pure policy tests.
 
 ## Building for production
 

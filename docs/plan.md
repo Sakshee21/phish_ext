@@ -2,7 +2,7 @@
 
 A Chromium browser extension (Manifest V3) that detects fake login pages impersonating known brands, explains *why* it thinks a page is fake, and tests different warning designs to see which makes users stop before entering credentials.
 
-Everything runs **inside the browser**. There is no backend server, no remote inference, and no network calls during detection. All reference data is generated once at build time and bundled into the extension.
+By default, everything runs **inside the browser**: no backend server and no remote inference. All reference data is generated once at build time and bundled into the extension. An optional Jev second-opinion layer (Layer 4) can be enabled per build; it sends page evidence to the study site's Jev proxy for a typed verdict. With it disabled, detection makes no network calls.
 
 ---
 
@@ -46,6 +46,21 @@ Determine *which* elements triggered the match so the warning can point at them:
 - **DOM inspection** — read the actual page: presence and layout of login forms, logo `<img>` source vs. bundled brand logo templates, dominant color scheme, brand keywords in text.
 - **Logo template matching** — canvas-based match of detected logo regions against bundled brand logo images.
 - DOM inspection beats image-based analysis on screenshots because the actual elements are readable, which is what makes the result precise and explainable.
+
+### Layer 4 — Jev second opinion (optional, network)
+
+When `JEV_ENABLED=true`, the background sends the local candidate verdict plus
+independent page evidence (URL/hostname, title, a short visible-text excerpt,
+DOM features, signals, flagged elements) to the study site's `/api/jev`, which
+forwards it to TypeSafe's Jev model. One request asks several atomic questions
+(is this phishing, is the brand the page presents, how strong is the
+impersonation evidence) and returns typed answers, probabilities, and
+confidence. Code owns the policy: a confident "legitimate" can suppress a false
+positive, a confident "phishing" can escalate a borderline match, and any
+timeout/error leaves the local verdict untouched. Jev never generates prose and
+never replaces the explainable local reasoning. The site proxy keeps the API
+key server-side and works around TypeSafe's rejection of `chrome-extension://`
+CORS origins.
 
 Pipeline output — not just a yes/no:
 

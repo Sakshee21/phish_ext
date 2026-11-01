@@ -2,13 +2,15 @@
 
 ## Three-layer pipeline
 
-The detector combines three independent checks. Each catches cases the others miss.
+The detector combines three independent local checks. Each catches cases the others miss. An optional fourth layer adds a network second opinion (Layer 4).
 
 - **Layer 1: Visual similarity** (perceptual hashing in the offscreen document). Captures a screenshot, computes a DCT-based pHash via canvas, compares against pre-built brand reference hashes. Catches pixel-for-pixel clones.
 
 - **Layer 2: Domain legitimacy** (background service worker). If the visual match says "this looks like Brand X" but the domain is not on that brand's allowlist, that is the core phishing signal. Also runs homoglyph/Levenshtein checks to catch typosquatting (e.g. `paypa1.com`).
 
 - **Layer 3: Element localization** (content script + background text identification, **mostly wired**). Reads the actual page DOM for login forms, logo candidates, colors, brand keywords, external-asset hotlinks, and font family; the background identifies the brand from page text and the warning points at the concrete elements that gave it away. The remaining piece — canvas-based logo *template matching* (`MATCH_LOGOS` in the offscreen worker) — is still a stub and does not yet participate in the verdict.
+
+- **Layer 4 (optional): Jev adjudication** (background → study site `/api/jev`). When enabled (`JEV_ENABLED=true`), the local candidate verdict and page evidence (title, short text excerpt, DOM features, signals, flagged elements) are sent to TypeSafe's Jev model for a typed second opinion. A confident "legitimate" answer can suppress a false positive; a confident "phishing" answer can escalate a borderline match. Jev returns typed values/probabilities only, never prose, and never gates the local layers: on timeout or error the local verdict stands unchanged. The extension calls the study site's proxy rather than TypeSafe directly, both to keep the API key server-side and because TypeSafe rejects `chrome-extension://` origins at the CORS preflight.
 
 > **Viewport sensitivity note (Layer 1):** Screenshot-based perceptual hashing is
 > layout-dependent: resizing the browser window reflows the page and can shift a same-page hash by
@@ -36,6 +38,8 @@ Background SW ----> Offscreen Doc     (COMPUTE_PHASH -> PHASH_RESULT)
 Background SW ----> Content Script    (DETECTED)
 Background SW ----> Content Script    (GET_FEATURES -> FEATURES_RESULT)
 Background SW ----> Content Script    (EXTENSION_DISABLED)
+Background SW ----> Study site         (/api/jev, optional Layer 4)
+Study site       ----> TypeSafe API     (server-side Jev call)
 Content Script ---> Background SW     (PAGE_READY, SET_BADGE, GO_BACK, LEFT_PAGE, SUBMITTED)
 Popup ------------> Background SW     (RESCAN, GET_ENABLED/SET_ENABLED,
                                        GET_TAB_STATUS, REPORT_FALSE_POSITIVE)
@@ -54,9 +58,16 @@ Popup ------------> Logs tab          (browser.tabs.create -> /logs.html)
 
 ## Logs & study data (privacy model)
 
-Detection makes **no network calls**: every warning interaction is recorded into
-`storage.local` and stays on the device. There are exactly two ways data can
-leave, both explicitly triggered by the participant and anonymous:
+Local detection makes **no network calls**: every warning interaction is
+recorded into `storage.local` and stays on the device. When the optional Jev
+layer is enabled (`JEV_ENABLED=true`), one additional automatic request leaves
+the browser: the page URL, hostname, title, a short text excerpt, extracted DOM
+features, the local verdict, and the flagged elements are sent to the study
+site's `/api/jev`, which forwards them to TypeSafe's Jev API for a second
+opinion. With Jev disabled, detection is fully local.
+
+The remaining ways data can leave are both explicitly triggered by the
+participant and anonymous:
 
 - The participant-facing **study log** page (`src/entrypoints/logs/`, opened
   from the popup) shows the record. The participant can export a JSON payload
